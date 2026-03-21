@@ -18,5 +18,16 @@
       "already_configured": "This Powerline network is already configured.",
       "raw_socket_unavailable": "Raw socket access not available. Home Assistant needs CAP_NET_RAW capability. For Docker: use --cap-add=NET_RAW --network=host"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "TP-Link Powerline options",
+        "description": "Adjust polling behavior."
+      }
+    },
+    "data": {
+      "scan_interval": "Scan interval (seconds)"
+    }
   }
 }
