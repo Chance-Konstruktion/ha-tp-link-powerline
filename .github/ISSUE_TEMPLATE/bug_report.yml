@@ -1,0 +1,91 @@
+name: Bug report
+about: Melde ein Problem mit der TP-Link Powerline Integration
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke fürs Melden! 🙌
+
+        Diese Integration ist experimentell. Für LED-Probleme helfen uns Logs + optional Wireshark-Capture sehr.
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant Version
+      placeholder: z.B. 2026.3.1
+    validations:
+      required: true
+
+  - type: input
+    id: integration_version
+    attributes:
+      label: Integration Version
+      placeholder: z.B. 3.1.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: adapter_models
+    attributes:
+      label: Adapter-Modelle + Firmware
+      description: Bitte alle beteiligten Adapter auflisten (z.B. TP-Link AV1000, FRITZ!Powerline AV500)
+      placeholder: |
+        - TP-Link TL-PAxxxx, FW ...
+        - FRITZ!Powerline ..., FW ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue_area
+    attributes:
+      label: Betroffener Bereich
+      options:
+        - Discovery (Geräte-Erkennung)
+        - Sensoren (TX/RX/Status)
+        - LED-Steuerung
+        - Einrichtung/Config Flow
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduktionsschritte
+      placeholder: |
+        1. ...
+        2. ...
+        3. Erwartet: ...
+        4. Tatsächlich: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: ha_logs
+    attributes:
+      label: Relevante Home Assistant Logs
+      description: Bitte Debug-Logs aus `custom_components.tplink_powerline` einfügen
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: tplc_details
+    attributes:
+      label: Vergleich mit tpPLC (Windows App)
+      description: Wenn möglich beschreiben, was in tpPLC funktioniert (z.B. LED toggle klappt)
+      placeholder: In tpPLC funktioniert ... / nicht ...
+
+  - type: checkboxes
+    id: capture_checklist
+    attributes:
+      label: Optionale Diagnose
+      options:
+        - label: Ich habe ein Wireshark-Capture mit `eth.type == 0x88e1 or eth.type == 0x8912` erstellt
+        - label: Ich habe sensible Daten (MACs/Seriennummern) vor dem Upload geprüft
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Sonstiges
+      description: Weitere Details, die helfen könnten

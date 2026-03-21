@@ -97,6 +97,22 @@ logger:
     custom_components.tplink_powerline: debug
 ```
 
+## 🆘 Fehler melden (sehr hilfreich für schnelle Fixes)
+
+Bitte poste bei Problemen möglichst:
+
+- Home Assistant Version + Integrationsversion
+- Adapter-Modell(e) + Firmware
+- Reproduktionsschritte (was genau geklickt wurde)
+- Debug-Logs aus `custom_components.tplink_powerline`
+- Vergleich mit der Windows-App **tpPLC** (z. B. „in tpPLC geht LED, in HA nicht“)
+
+Optional, aber extrem wertvoll:
+- Wireshark-Capture mit Filter `eth.type == 0x88e1 or eth.type == 0x8912`
+
+Für GitHub-Issues gibt es ein vorbereitetes Bug-Template unter
+`.github/ISSUE_TEMPLATE/bug_report.yml`.
+
 ## 📝 Hinweise
 
 - **LED-Steuerung** ist experimentell — sie kann je nach Adapter gar nicht funktionieren oder unerwartete Fehler liefern. Die Integration fängt solche Fehler jetzt defensiv ab, damit Home Assistant nicht abstürzt.
