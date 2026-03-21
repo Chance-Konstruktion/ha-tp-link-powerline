@@ -39,6 +39,7 @@ Home Assistant (Ethernet)
 - 📡 **Online-Status** pro Adapter
 - 📡 **Firmware-Version** jedes Adapters
 - 💡 **LED-Steuerung** pro Adapter (rein experimentell, je nach Modell instabil)
+  - LED-Entität ist standardmäßig deaktiviert und kann bei Bedarf manuell aktiviert werden.
 
 ## ⚠️ Voraussetzungen
 

@@ -58,6 +58,7 @@ class LedSwitch(CoordinatorEntity[TpLinkPowerlineCoordinator], SwitchEntity):
     _attr_name = "LED"
     _attr_icon = "mdi:led-on"
     _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: TpLinkPowerlineCoordinator,
                  mac: str, firmware: str) -> None:
