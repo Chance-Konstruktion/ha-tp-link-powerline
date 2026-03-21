@@ -89,6 +89,10 @@ sudo setcap cap_net_raw+ep $(readlink -f $(which python3))
 ### Dynamische Erkennung
 Neue Adapter werden **automatisch alle 60 Sekunden** gesucht. Wenn ein neuer Adapter eingesteckt wird, erscheinen seine Entities nach spätestens einer Minute in Home Assistant.
 
+Das Intervall ist optional konfigurierbar unter:
+**Einstellungen → Geräte & Dienste → TP-Link Powerline → Konfigurieren**
+(Standard: 60s, Bereich: 10–600s).
+
 ## 🐛 Debug
 
 ```yaml

@@ -36,6 +36,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         hass: HomeAssistant,
         interface: str | None,
         initial_devices: list[dict[str, Any]],
+        scan_interval: int = DEFAULT_SCAN_INTERVAL,
     ) -> None:
         self.hp = HomeplugAV(interface)
         self.interface = interface or self.hp.interface
@@ -53,7 +54,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         super().__init__(
             hass, _LOGGER,
             name=f"{DOMAIN}_homeplug",
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            update_interval=timedelta(seconds=scan_interval),
         )
 
     def register_new_device_callback(self, cb: Callable[[list[dict[str, Any]]], None]) -> None:
