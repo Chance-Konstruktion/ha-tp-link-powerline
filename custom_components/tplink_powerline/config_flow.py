@@ -1,4 +1,4 @@
-"""Config flow for TP-Link Powerline integration.
+"""Config flow for Powerline Network integration.
 
 Discovery uses HomePlug AV raw Ethernet (Layer 2) — no IP needed.
 The user just clicks 'Add' and all Powerline adapters are found automatically.
@@ -24,7 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class TpLinkPowerlineConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Config flow for TP-Link Powerline."""
+    """Config flow for Powerline Network."""
 
     VERSION = 1
 
@@ -49,6 +49,10 @@ class TpLinkPowerlineConfigFlow(ConfigFlow, domain=DOMAIN):
             if not self._interface:
                 errors["base"] = "no_interface"
             else:
+                # Use interface as stable unique ID — one integration per NIC
+                await self.async_set_unique_id(f"powerline_{self._interface}")
+                self._abort_if_unique_id_configured()
+
                 hp = HomeplugAV(self._interface)
                 self._discovered = await self.hass.async_add_executor_job(
                     hp.discover, 8.0
@@ -69,20 +73,8 @@ class TpLinkPowerlineConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Step 2: Show discovered devices, user confirms."""
         if user_input is not None:
-            # Build unique ID from all discovered MACs
-            all_macs = sorted(
-                d.get("mac", d.get("plcmac", "")).upper()
-                for d in self._discovered
-                if d.get("mac") or d.get("plcmac")
-            )
-            unique_id = "_".join(all_macs) if all_macs else "tplink_plc"
-
-            await self.async_set_unique_id(unique_id)
-            self._abort_if_unique_id_configured()
-
-            # Build title from device count
             count = len(self._discovered)
-            title = f"TP-Link Powerline ({count} Adapter)"
+            title = f"Powerline ({count} Adapter)"
 
             return self.async_create_entry(
                 title=title,
@@ -125,7 +117,7 @@ class TpLinkPowerlineConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class TpLinkPowerlineOptionsFlow(OptionsFlow):
-    """Handle TP-Link Powerline options."""
+    """Handle Powerline Network options."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self.config_entry = config_entry

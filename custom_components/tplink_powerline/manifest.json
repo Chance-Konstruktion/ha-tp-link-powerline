@@ -1,12 +1,12 @@
 {
   "domain": "tplink_powerline",
-  "name": "TP-Link Powerline",
+  "name": "Powerline Network",
   "codeowners": [],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/your-repo/ha-tplink-powerline",
+  "documentation": "https://github.com/Chance-Konstruktion/ha-tp-link-powerline",
   "integration_type": "hub",
   "iot_class": "local_polling",
   "requirements": [],
-  "version": "3.1.0"
+  "version": "4.0.0"
 }

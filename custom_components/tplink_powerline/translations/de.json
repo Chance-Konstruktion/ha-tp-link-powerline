@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "TP-Link Powerline",
-        "description": "Klicke 'Weiter' um nach Powerline-Adaptern in deinem Netzwerk zu suchen.\n\nBenötigt Raw-Socket-Zugriff (CAP_NET_RAW)."
+        "title": "Powerline Netzwerk",
+        "description": "Klicke 'Weiter' um nach Powerline-Adaptern in deinem Netzwerk zu suchen.\n\nBenötigt Raw-Socket-Zugriff (CAP_NET_RAW).\n\nUnterstützt: TP-Link, FRITZ!Powerline, devolo und andere HomePlug AV Adapter."
       },
       "confirm": {
         "title": "Geräte gefunden",
@@ -22,8 +22,8 @@
   "options": {
     "step": {
       "init": {
-        "title": "TP-Link Powerline Optionen",
-        "description": "Polling-Verhalten anpassen."
+        "title": "Powerline Netzwerk Optionen",
+        "description": "Polling-Verhalten anpassen. Änderungen werden sofort wirksam."
       }
     },
     "data": {

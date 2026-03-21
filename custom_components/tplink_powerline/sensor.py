@@ -1,4 +1,4 @@
-"""Sensor platform for TP-Link Powerline.
+"""Sensor platform for Powerline Network.
 
 Creates TX/RX sensors per adapter. Dynamically adds entities
 when new devices are discovered during polling.
@@ -17,10 +17,31 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN, MANUFACTURER, NETWORK_DEVICE_ID, NETWORK_DEVICE_NAME, get_mac
 from .coordinator import TpLinkPowerlineCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _device_info(mac: str, firmware: str) -> DeviceInfo:
+    """Build DeviceInfo for a single Powerline adapter."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, mac)},
+        name=f"Powerline {mac[-8:]}",
+        manufacturer=MANUFACTURER,
+        model="Powerline Adapter",
+        sw_version=firmware or None,
+    )
+
+
+def _network_device_info() -> DeviceInfo:
+    """Build DeviceInfo for the network-wide virtual device."""
+    return DeviceInfo(
+        identifiers={(DOMAIN, NETWORK_DEVICE_ID)},
+        name=NETWORK_DEVICE_NAME,
+        manufacturer=MANUFACTURER,
+        model="Powerline Network",
+    )
 
 
 async def async_setup_entry(
@@ -34,7 +55,7 @@ async def async_setup_entry(
         """Create sensor entities for a list of devices."""
         new_entities: list[SensorEntity] = []
         for dev in devices:
-            mac = (dev.get("mac") or dev.get("plcmac") or "").upper()
+            mac = get_mac(dev)
             if not mac or mac in tracked_macs:
                 continue
             tracked_macs.add(mac)
@@ -51,20 +72,21 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = []
 
-    # Network-wide aggregate sensors
-    entities.append(TotalSensor(coordinator, "total_tx_rate", "Powerline TX Gesamt",
+    # Network-wide aggregate sensors (English names, translated via strings.json)
+    entities.append(TotalSensor(coordinator, "total_tx_rate", "TX Total",
                                 UnitOfDataRate.MEGABITS_PER_SECOND, "mdi:upload-network"))
-    entities.append(TotalSensor(coordinator, "total_rx_rate", "Powerline RX Gesamt",
+    entities.append(TotalSensor(coordinator, "total_rx_rate", "RX Total",
                                 UnitOfDataRate.MEGABITS_PER_SECOND, "mdi:download-network"))
-    entities.append(TotalSensor(coordinator, "plc_device_count", "Powerline Adapter Online",
+    entities.append(TotalSensor(coordinator, "plc_device_count", "Adapters Online",
                                 None, "mdi:lan"))
-    entities.append(TotalSensor(coordinator, "plc_device_count_total", "Powerline Adapter Gesamt",
+    entities.append(TotalSensor(coordinator, "plc_device_count_total", "Adapters Total",
                                 None, "mdi:lan-check"))
 
     # Per-device sensors for already-known devices
     if coordinator.data:
-        initial_devs = coordinator.data.get("plc_devices", [])
-        _create_entities_for_devices(initial_devs)
+        devs = coordinator.data.get("plc_devices", {})
+        device_list = list(devs.values()) if isinstance(devs, dict) else devs
+        _create_entities_for_devices(device_list)
 
     async_add_entities(entities)
 
@@ -74,8 +96,8 @@ async def async_setup_entry(
 class TotalSensor(CoordinatorEntity[TpLinkPowerlineCoordinator], SensorEntity):
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator, key: str, name: str,
-                 unit: str | None, icon: str) -> None:
+    def __init__(self, coordinator: TpLinkPowerlineCoordinator, key: str,
+                 name: str, unit: str | None, icon: str) -> None:
         super().__init__(coordinator)
         self._key = key
         self._attr_unique_id = f"tplink_plc_{key}"
@@ -85,10 +107,7 @@ class TotalSensor(CoordinatorEntity[TpLinkPowerlineCoordinator], SensorEntity):
         if unit:
             self._attr_device_class = SensorDeviceClass.DATA_RATE
         self._attr_state_class = SensorStateClass.MEASUREMENT
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, "tplink_powerline_network")},
-            name="TP-Link Powerline Netzwerk",
-            manufacturer=MANUFACTURER, model="Powerline Network")
+        self._attr_device_info = _network_device_info()
 
     @property
     def native_value(self) -> Any:
@@ -104,7 +123,7 @@ class PlcDeviceTxSensor(CoordinatorEntity[TpLinkPowerlineCoordinator], SensorEnt
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:upload-network"
 
-    def __init__(self, coordinator, mac: str, firmware: str) -> None:
+    def __init__(self, coordinator: TpLinkPowerlineCoordinator, mac: str, firmware: str) -> None:
         super().__init__(coordinator)
         self._mac = mac
         self._attr_unique_id = f"plc_{mac}_tx"
@@ -125,7 +144,7 @@ class PlcDeviceRxSensor(CoordinatorEntity[TpLinkPowerlineCoordinator], SensorEnt
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:download-network"
 
-    def __init__(self, coordinator, mac: str, firmware: str) -> None:
+    def __init__(self, coordinator: TpLinkPowerlineCoordinator, mac: str, firmware: str) -> None:
         super().__init__(coordinator)
         self._mac = mac
         self._attr_unique_id = f"plc_{mac}_rx"
@@ -143,7 +162,7 @@ class PlcDeviceOnlineSensor(CoordinatorEntity[TpLinkPowerlineCoordinator], Senso
     _attr_has_entity_name = True
     _attr_icon = "mdi:lan-connect"
 
-    def __init__(self, coordinator, mac: str, firmware: str) -> None:
+    def __init__(self, coordinator: TpLinkPowerlineCoordinator, mac: str, firmware: str) -> None:
         super().__init__(coordinator)
         self._mac = mac
         self._attr_unique_id = f"plc_{mac}_online"
@@ -152,30 +171,20 @@ class PlcDeviceOnlineSensor(CoordinatorEntity[TpLinkPowerlineCoordinator], Senso
 
     @property
     def native_value(self) -> str | None:
-        devs = (self.coordinator.data or {}).get("plc_devices", [])
-        for d in devs:
-            m = (d.get("mac") or d.get("plcmac") or "").upper()
-            if m == self._mac:
-                return "Online" if d.get("_online", True) else "Offline"
-        return "Unbekannt"
+        devs = (self.coordinator.data or {}).get("plc_devices", {})
+        dev = devs.get(self._mac) if isinstance(devs, dict) else None
+        if dev:
+            return "Online" if dev.get("_online", True) else "Offline"
+        return "Unknown"
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        devs = (self.coordinator.data or {}).get("plc_devices", [])
-        for d in devs:
-            m = (d.get("mac") or d.get("plcmac") or "").upper()
-            if m == self._mac:
-                return {
-                    "mac": self._mac,
-                    "firmware": d.get("firmware_ver", ""),
-                    "same_network": d.get("same_network", True),
-                }
+        devs = (self.coordinator.data or {}).get("plc_devices", {})
+        dev = devs.get(self._mac) if isinstance(devs, dict) else None
+        if dev:
+            return {
+                "mac": self._mac,
+                "firmware": dev.get("firmware_ver", ""),
+                "same_network": dev.get("same_network", True),
+            }
         return {"mac": self._mac}
-
-
-def _device_info(mac: str, firmware: str) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, mac)},
-        name=f"Powerline {mac[-8:]}",
-        manufacturer=MANUFACTURER, model="Powerline Adapter",
-        sw_version=firmware or None)

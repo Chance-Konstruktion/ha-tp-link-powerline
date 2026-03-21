@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for TP-Link Powerline.
+"""DataUpdateCoordinator for Powerline Network.
 
 Uses HomePlug AV raw Ethernet (Layer 2) — no IP needed.
 Discovers new devices every poll cycle (default 60s).
@@ -9,22 +9,22 @@ from datetime import timedelta
 from typing import Any, Callable
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, get_mac
 from .homeplug import HomeplugAV
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Polls Powerline adapters via HomePlug AV Layer 2 every 60s.
+    """Polls Powerline adapters via HomePlug AV Layer 2.
 
     Every poll cycle:
     1. Full discovery (CC_DISCOVER_LIST) to find new/removed adapters
-    2. Network stats (VS_NW_STATS) for TX/RX PHY rates
-    3. Firmware query (VS_SW_VER) for newly found devices
+    2. Rate fetching (MEDIAXTREAM / Qualcomm) for TX/RX PHY rates
+    3. Device info queries for newly found devices
 
     New devices are tracked and platforms are notified to create entities.
     """
@@ -46,7 +46,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Index initial devices by MAC
         for dev in initial_devices:
-            mac = (dev.get("mac") or dev.get("plcmac") or "").upper()
+            mac = get_mac(dev)
             if mac:
                 self.devices[mac] = dev
                 self._known_macs.add(mac)
@@ -64,23 +64,21 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Full discovery + stats every poll cycle."""
         try:
-            loop = self.hass.loop
-
             # Full discovery every time — finds new and existing devices
-            discovered = await loop.run_in_executor(None, self.hp.discover, 5.0)
+            discovered = await self.hass.async_add_executor_job(
+                self.hp.discover, 5.0
+            )
 
             new_devices: list[dict[str, Any]] = []
 
             for dev in discovered:
-                mac = (dev.get("mac") or dev.get("plcmac") or "").upper()
+                mac = get_mac(dev)
                 if not mac:
                     continue
 
                 if mac in self.devices:
-                    # Update existing device with fresh data
                     self.devices[mac].update(dev)
                 else:
-                    # Brand new device!
                     self.devices[mac] = dev
                     _LOGGER.info("New Powerline adapter discovered: %s (FW: %s)",
                                  mac, dev.get("firmware_ver", "?"))
@@ -90,8 +88,8 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     new_devices.append(dev)
 
             # Mark devices not seen in this scan
-            seen_macs = {(d.get("mac") or d.get("plcmac") or "").upper() for d in discovered}
-            for mac in list(self.devices.keys()):
+            seen_macs = {get_mac(d) for d in discovered}
+            for mac in self.devices:
                 self.devices[mac]["_online"] = mac in seen_macs
 
             # Notify platforms about new devices so they create entities
@@ -104,24 +102,22 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         _LOGGER.exception("Error in new device callback")
 
             # Build output data
-            device_list = list(self.devices.values())
-            online_list = [d for d in device_list if d.get("_online", True)]
-            total_tx = sum(d.get("tx_rate", 0) for d in online_list)
-            total_rx = sum(d.get("rx_rate", 0) for d in online_list)
+            online_devices = {m: d for m, d in self.devices.items() if d.get("_online", True)}
+            total_tx = sum(d.get("tx_rate", 0) for d in online_devices.values())
+            total_rx = sum(d.get("rx_rate", 0) for d in online_devices.values())
 
             plc_rates: dict[str, dict[str, int]] = {}
-            for dev in device_list:
-                mac = (dev.get("mac") or dev.get("plcmac") or "").upper()
+            for mac, dev in self.devices.items():
                 plc_rates[mac] = {
                     "tx": dev.get("tx_rate", 0),
                     "rx": dev.get("rx_rate", 0),
                 }
 
             return {
-                "online": len(online_list) > 0,
-                "plc_devices": device_list,
-                "plc_device_count": len(online_list),
-                "plc_device_count_total": len(device_list),
+                "online": len(online_devices) > 0,
+                "plc_devices": self.devices,
+                "plc_device_count": len(online_devices),
+                "plc_device_count_total": len(self.devices),
                 "plc_rates": plc_rates,
                 "total_tx_rate": total_tx,
                 "total_rx_rate": total_rx,

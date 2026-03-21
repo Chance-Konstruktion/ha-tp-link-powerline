@@ -1,15 +1,17 @@
-"""TP-Link Powerline integration for Home Assistant.
+"""Powerline Network integration for Home Assistant.
 
 Communicates with Powerline adapters via HomePlug AV Management Messages
-(raw Ethernet, Ethertype 0x88E1). No IP address needed — works with
-pure PLC adapters that are invisible to the router.
+(raw Ethernet, Ethertype 0x88E1) and MEDIAXTREAM (Ethertype 0x8912).
+No IP address needed — works with pure PLC adapters that are invisible
+to the router.
+
+Supports: TP-Link, FRITZ!Powerline, devolo, and other HomePlug AV adapters.
 
 Requires: CAP_NET_RAW capability or running HA as root.
-
-Reverse-engineered from the tpPLC Android app + HomePlug AV specification.
 """
 
 import logging
+from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -22,7 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up TP-Link Powerline from a config entry."""
+    """Set up Powerline Network from a config entry."""
     interface = entry.data.get("interface")
     initial_devices = entry.data.get("devices", [])
     scan_interval = int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
@@ -48,7 +50,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Listen for options changes (e.g. scan interval) — apply without restart
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+
     return True
+
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle options update — adjust scan interval dynamically."""
+    coordinator: TpLinkPowerlineCoordinator = hass.data[DOMAIN][entry.entry_id]
+    new_interval = int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
+    coordinator.update_interval = timedelta(seconds=new_interval)
+    _LOGGER.info("Powerline scan interval updated to %ds", new_interval)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
