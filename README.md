@@ -4,6 +4,18 @@
 
 HACS-Integration für **TP-Link Powerline-Adapter** — funktioniert mit reinen PLC-Adaptern **ohne WiFi und ohne IP-Adresse**!
 
+## ⚠️ Projektstatus
+
+Diese Integration ist aktuell **experimentell**.
+
+**Stand heute:**
+- ✅ Zuverlässig: Erkennung von Powerline/dLAN-Adaptern im Layer-2-Netz
+- ⚠️ Experimentell: Detailfunktionen wie LED-Steuerung (modellabhängig, kann fehlschlagen)
+
+Getestete Erkennung (aus der Praxis):
+- TP-Link AV1000
+- FRITZ!Powerline AV500 (oder ähnliche AV500-Modelle)
+
 ## Wie funktioniert das?
 
 Kommuniziert direkt über **HomePlug AV Management Messages** (Layer 2, Ethertype `0x88E1`). Keine IP nötig — genau wie die offizielle tpPLC-App.
@@ -26,7 +38,7 @@ Home Assistant (Ethernet)
 - 🔢 **Adapter-Anzahl** (Online + Gesamt)
 - 📡 **Online-Status** pro Adapter
 - 📡 **Firmware-Version** jedes Adapters
-- 💡 **LED-Steuerung** pro Adapter (experimentell)
+- 💡 **LED-Steuerung** pro Adapter (rein experimentell, je nach Modell instabil)
 
 ## ⚠️ Voraussetzungen
 
@@ -87,5 +99,6 @@ logger:
 
 ## 📝 Hinweise
 
-- **LED-Steuerung** ist experimentell — die exakte HomePlug AV MME für LED-Kontrolle ist noch nicht vollständig verifiziert. Ein Wireshark-Capture (Filter: `eth.type == 0x88e1`) beim LED-Umschalten über die Windows TP-Link Utility wäre hilfreich!
+- **LED-Steuerung** ist experimentell — sie kann je nach Adapter gar nicht funktionieren oder unerwartete Fehler liefern. Die Integration fängt solche Fehler jetzt defensiv ab, damit Home Assistant nicht abstürzt.
+- Die exakte HomePlug-AV-MME für LED-Kontrolle ist weiterhin nicht vollständig verifiziert. Ein Wireshark-Capture (Filter: `eth.type == 0x88e1` oder `eth.type == 0x8912`) beim LED-Umschalten über die Windows TP-Link Utility wäre hilfreich.
 - HA muss per **Ethernet** verbunden sein (WiFi kann keine Layer 2 HomePlug AV Frames senden)
