@@ -133,4 +133,8 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_set_led(self, mac: str, on: bool) -> bool:
         """Set LED on a specific adapter (by MAC)."""
         loop = self.hass.loop
-        return await loop.run_in_executor(None, self.hp.set_led, mac, on)
+        try:
+            return await loop.run_in_executor(None, self.hp.set_led, mac, on)
+        except Exception:
+            _LOGGER.exception("LED control crashed for %s (on=%s)", mac, on)
+            return False
