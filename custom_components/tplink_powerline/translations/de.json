@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "TP-Link Powerline",
+        "description": "Klicke 'Weiter' um nach Powerline-Adaptern in deinem Netzwerk zu suchen.\n\nBenötigt Raw-Socket-Zugriff (CAP_NET_RAW)."
+      },
+      "confirm": {
+        "title": "Geräte gefunden",
+        "description": "{count} Powerline-Adapter gefunden:\n\n{devices}\n\nKlicke 'Absenden' um sie hinzuzufügen."
+      }
+    },
+    "error": {
+      "no_devices_found": "Keine Powerline-Adapter gefunden. Stelle sicher, dass die Adapter eingesteckt und gepairt sind.",
+      "no_interface": "Kein geeignetes Netzwerk-Interface gefunden."
+    },
+    "abort": {
+      "already_configured": "Dieses Powerline-Netzwerk ist bereits konfiguriert.",
+      "raw_socket_unavailable": "Raw-Socket-Zugriff nicht verfügbar. Home Assistant benötigt CAP_NET_RAW. Für Docker: --cap-add=NET_RAW --network=host verwenden."
+    }
+  }
+}
