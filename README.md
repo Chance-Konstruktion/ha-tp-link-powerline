@@ -4,6 +4,18 @@
 
 HACS-Integration für **TP-Link Powerline-Adapter** — funktioniert mit reinen PLC-Adaptern **ohne WiFi und ohne IP-Adresse**!
 
+## ⚠️ Projektstatus
+
+Diese Integration ist aktuell **experimentell**.
+
+**Stand heute:**
+- ✅ Zuverlässig: Erkennung von Powerline/dLAN-Adaptern im Layer-2-Netz
+- ⚠️ Experimentell: Detailfunktionen wie LED-Steuerung (modellabhängig, kann fehlschlagen)
+
+Getestete Erkennung (aus der Praxis):
+- TP-Link AV1000
+- FRITZ!Powerline AV500 (oder ähnliche AV500-Modelle)
+
 ## Wie funktioniert das?
 
 Kommuniziert direkt über **HomePlug AV Management Messages** (Layer 2, Ethertype `0x88E1`). Keine IP nötig — genau wie die offizielle tpPLC-App.
@@ -26,7 +38,8 @@ Home Assistant (Ethernet)
 - 🔢 **Adapter-Anzahl** (Online + Gesamt)
 - 📡 **Online-Status** pro Adapter
 - 📡 **Firmware-Version** jedes Adapters
-- 💡 **LED-Steuerung** pro Adapter (experimentell)
+- 💡 **LED-Steuerung** pro Adapter (rein experimentell, je nach Modell instabil)
+  - LED-Entität ist standardmäßig deaktiviert und kann bei Bedarf manuell aktiviert werden.
 
 ## ⚠️ Voraussetzungen
 
@@ -77,6 +90,10 @@ sudo setcap cap_net_raw+ep $(readlink -f $(which python3))
 ### Dynamische Erkennung
 Neue Adapter werden **automatisch alle 60 Sekunden** gesucht. Wenn ein neuer Adapter eingesteckt wird, erscheinen seine Entities nach spätestens einer Minute in Home Assistant.
 
+Das Intervall ist optional konfigurierbar unter:
+**Einstellungen → Geräte & Dienste → TP-Link Powerline → Konfigurieren**
+(Standard: 60s, Bereich: 10–600s).
+
 ## 🐛 Debug
 
 ```yaml
@@ -85,7 +102,24 @@ logger:
     custom_components.tplink_powerline: debug
 ```
 
+## 🆘 Fehler melden (sehr hilfreich für schnelle Fixes)
+
+Bitte poste bei Problemen möglichst:
+
+- Home Assistant Version + Integrationsversion
+- Adapter-Modell(e) + Firmware
+- Reproduktionsschritte (was genau geklickt wurde)
+- Debug-Logs aus `custom_components.tplink_powerline`
+- Vergleich mit der Windows-App **tpPLC** (z. B. „in tpPLC geht LED, in HA nicht“)
+
+Optional, aber extrem wertvoll:
+- Wireshark-Capture mit Filter `eth.type == 0x88e1 or eth.type == 0x8912`
+
+Für GitHub-Issues gibt es ein vorbereitetes Bug-Template unter
+`.github/ISSUE_TEMPLATE/bug_report.yml`.
+
 ## 📝 Hinweise
 
-- **LED-Steuerung** ist experimentell — die exakte HomePlug AV MME für LED-Kontrolle ist noch nicht vollständig verifiziert. Ein Wireshark-Capture (Filter: `eth.type == 0x88e1`) beim LED-Umschalten über die Windows TP-Link Utility wäre hilfreich!
+- **LED-Steuerung** ist experimentell — sie kann je nach Adapter gar nicht funktionieren oder unerwartete Fehler liefern. Die Integration fängt solche Fehler jetzt defensiv ab, damit Home Assistant nicht abstürzt.
+- Die exakte HomePlug-AV-MME für LED-Kontrolle ist weiterhin nicht vollständig verifiziert. Ein Wireshark-Capture (Filter: `eth.type == 0x88e1` oder `eth.type == 0x8912`) beim LED-Umschalten über die Windows TP-Link Utility wäre hilfreich.
 - HA muss per **Ethernet** verbunden sein (WiFi kann keine Layer 2 HomePlug AV Frames senden)

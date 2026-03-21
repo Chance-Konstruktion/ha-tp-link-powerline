@@ -743,51 +743,54 @@ class HomeplugAV:
 
     def set_led(self, mac: str, on: bool, timeout: float = 2.0) -> bool:
         try:
-            self._open_hpav()
-            self._open_mx()
-        except (PermissionError, OSError):
+            try:
+                self._open_hpav()
+                self._open_mx()
+            except (PermissionError, OSError):
+                return False
+
+            dst = mac_to_bytes(mac)
+            led_val = b"\x01" if on else b"\x00"
+
+            # MEDIAXTREAM strategies (Broadcom)
+            mx_tests = [
+                ("MX SetKey 0xA018", MX_SET_KEY_REQ, led_val, MX_SET_KEY_CNF),
+            ]
+            for name, req, payload, cnf in mx_tests:
+                _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
+                frame = build_mx_frame(dst, self._src_mac, req,
+                                       seq=self._next_seq(), payload=payload)
+                for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
+                    _LOGGER.debug("  LED MX resp: 0x%04X from %s", mmtype, src)
+                    if mmtype == cnf:
+                        _LOGGER.info("LED works via %s!", name)
+                        return True
+
+            # Qualcomm strategies
+            qca_tests = [
+                ("QCA 0xA00C", build_qca_frame(
+                    dst, self._src_mac, 0xA00C,
+                    struct.pack("<BBH", 0x00, 0x02, 1) + led_val), 0xA00D),
+                ("QCA 0xA00E", build_qca_frame(
+                    dst, self._src_mac, 0xA00E, led_val), 0xA00F),
+            ]
+            for name, frame, expect in qca_tests:
+                _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
+                for mmtype, src, data in self._send_recv(
+                        self._sock_hpav, frame, 1.5):
+                    if mmtype == expect:
+                        _LOGGER.info("LED works via %s!", name)
+                        return True
+
+            _LOGGER.warning(
+                "LED: no response from %s. "
+                "LED control may not be supported via Layer 2.", mac)
             return False
-
-        dst = mac_to_bytes(mac)
-        led_val = b"\x01" if on else b"\x00"
-
-        # MEDIAXTREAM strategies (Broadcom)
-        mx_tests = [
-            ("MX SetKey 0xA018", MX_SET_KEY_REQ, led_val, MX_SET_KEY_CNF),
-        ]
-        for name, req, payload, cnf in mx_tests:
-            _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
-            frame = build_mx_frame(dst, self._src_mac, req,
-                                   seq=self._next_seq(), payload=payload)
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-                _LOGGER.debug("  LED MX resp: 0x%04X from %s", mmtype, src)
-                if mmtype == cnf:
-                    _LOGGER.info("LED works via %s!", name)
-                    self._close()
-                    return True
-
-        # Qualcomm strategies
-        qca_tests = [
-            ("QCA 0xA00C", build_qca_frame(
-                dst, self._src_mac, 0xA00C,
-                struct.pack("<BBH", 0x00, 0x02, 1) + led_val), 0xA00D),
-            ("QCA 0xA00E", build_qca_frame(
-                dst, self._src_mac, 0xA00E, led_val), 0xA00F),
-        ]
-        for name, frame, expect in qca_tests:
-            _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
-            for mmtype, src, data in self._send_recv(
-                    self._sock_hpav, frame, 1.5):
-                if mmtype == expect:
-                    _LOGGER.info("LED works via %s!", name)
-                    self._close()
-                    return True
-
-        self._close()
-        _LOGGER.warning(
-            "LED: no response from %s. "
-            "LED control may not be supported via Layer 2.", mac)
-        return False
+        except Exception as err:
+            _LOGGER.exception("LED control exception for %s: %s", mac, err)
+            return False
+        finally:
+            self._close()
 
     # ── Diagnostics ──────────────────────────────────────
 
