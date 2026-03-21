@@ -712,33 +712,6 @@ class HomeplugAV:
                                     "ascii", errors="ignore").rstrip("\x00")
                                 devices[mac]["firmware_ver"] = ver
 
-    # ── Stats Polling (used by coordinator) ──────────────
-
-    def get_stats(self, timeout: float = 3.0) -> list[dict]:
-        """Get current PHY rates from all adapters. Called every poll."""
-        try:
-            self._open_hpav()
-            self._open_mx()
-        except (PermissionError, OSError):
-            return []
-
-        devices: dict[str, dict] = {}
-
-        # Quick CC_DISCOVER_LIST
-        frame = build_hpav_frame(BROADCAST_MAC, self._src_mac,
-                                 CC_DISCOVER_LIST_REQ)
-        for mmtype, src, data in self._send_recv(self._sock_hpav, frame, 2.0):
-            if mmtype == CC_DISCOVER_LIST_CNF:
-                devices.setdefault(src, self._new_dev(src))
-                for sta in parse_discover_cnf(data):
-                    devices.setdefault(sta["mac"], self._new_dev(sta["mac"]))
-
-        # Fetch rates using best available method
-        self._fetch_rates(devices)
-
-        self._close()
-        return list(devices.values())
-
     # ── LED Control ──────────────────────────────────────
 
     def set_led(self, mac: str, on: bool, timeout: float = 2.0) -> bool:
@@ -988,13 +961,13 @@ class HomeplugAV:
 async def async_discover(interface: str | None = None,
                          timeout: float = 5.0) -> list[dict]:
     hp = HomeplugAV(interface)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, hp.discover, timeout)
 
 async def async_diagnose(interface: str | None = None,
                          timeout: float = 10.0) -> str:
     hp = HomeplugAV(interface)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, hp.diagnose, timeout)
 
 def find_interface() -> str | None:
