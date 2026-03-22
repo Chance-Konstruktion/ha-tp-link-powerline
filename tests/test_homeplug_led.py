@@ -63,4 +63,24 @@ class TestHomeplugSetLed(TestCase):
 
         self.assertTrue(result)
         self.assertEqual(send_recv_mock.call_args[0][2], 3.2)
+        self.assertIn("AA:BB:CC:DD:EE:FF", hp._led_success_macs)
         close_mock.assert_called_once()
+
+    def test_annotate_capabilities_marks_vendor_and_led_support(self) -> None:
+        hp = HomeplugAV("eth0")
+        hp._chipset = "broadcom"
+        hp._led_success_macs.add("AA:BB:CC:DD:EE:FF")
+        devices = {
+            "AA:BB:CC:DD:EE:FF": hp._new_dev("AA:BB:CC:DD:EE:FF"),
+            "11:22:33:44:55:66": hp._new_dev("11:22:33:44:55:66"),
+        }
+        devices["AA:BB:CC:DD:EE:FF"]["tx_rate"] = 100
+
+        hp._annotate_capabilities(devices)
+
+        first_caps = devices["AA:BB:CC:DD:EE:FF"]["capabilities"]
+        second_caps = devices["11:22:33:44:55:66"]["capabilities"]
+        self.assertTrue(first_caps["supports_vendor_mx"])
+        self.assertTrue(first_caps["supports_rate_polling"])
+        self.assertTrue(first_caps["supports_led_control"])
+        self.assertFalse(second_caps["supports_led_control"])

@@ -346,6 +346,7 @@ class HomeplugAV:
         self._src_mac = b"\x00" * 6
         self._seq = 1
         self._chipset = "unknown"  # "broadcom" or "qualcomm"
+        self._led_success_macs: set[str] = set()
 
     def _next_seq(self) -> int:
         s = self._seq
@@ -432,6 +433,20 @@ class HomeplugAV:
         return {"mac": mac, "plcmac": mac, "model": "",
                 "firmware_ver": "", "tx_rate": 0, "rx_rate": 0}
 
+    def _annotate_capabilities(self, devices: dict[str, dict]) -> None:
+        """Attach capability hints per adapter for easier diagnostics."""
+        for mac, dev in devices.items():
+            dev["chipset"] = self._chipset
+            dev["capabilities"] = {
+                "supports_standard_discovery": True,
+                "supports_vendor_mx": self._chipset == "broadcom",
+                "supports_vendor_qca": self._chipset == "qualcomm",
+                "supports_rate_polling": (
+                    dev.get("tx_rate", 0) > 0 or dev.get("rx_rate", 0) > 0
+                ),
+                "supports_led_control": mac.upper() in self._led_success_macs,
+            }
+
     # ── Discovery ──────────────────────────────────────────
 
     def discover(self, timeout: float = 5.0) -> list[dict]:
@@ -486,6 +501,7 @@ class HomeplugAV:
 
         # Step 4: Get firmware/model info
         self._fetch_device_info(devices)
+        self._annotate_capabilities(devices)
 
         self._close()
         _LOGGER.info("HomePlug AV: %d adapters (chipset=%s)",
@@ -735,6 +751,7 @@ class HomeplugAV:
 
         # Fetch rates using best available method
         self._fetch_rates(devices)
+        self._annotate_capabilities(devices)
 
         self._close()
         return list(devices.values())
@@ -766,6 +783,7 @@ class HomeplugAV:
                     _LOGGER.debug("  LED MX resp: 0x%04X from %s", mmtype, src)
                     if mmtype == cnf:
                         _LOGGER.info("LED works via %s!", name)
+                        self._led_success_macs.add(mac.upper())
                         return True
 
             # Qualcomm strategies
@@ -782,6 +800,7 @@ class HomeplugAV:
                         self._sock_hpav, frame, request_timeout):
                     if mmtype == expect:
                         _LOGGER.info("LED works via %s!", name)
+                        self._led_success_macs.add(mac.upper())
                         return True
 
             _LOGGER.warning(

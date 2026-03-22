@@ -102,6 +102,10 @@ logger:
     custom_components.tplink_powerline: debug
 ```
 
+In den Device-Daten werden zusätzlich Capability-Hinweise hinterlegt
+(`chipset`, `capabilities.*`), um schneller zu sehen, ob ein Adapter eher
+über Standard-, Broadcom(MX)- oder Qualcomm(VS)-Pfad antwortet.
+
 ## 🆘 Fehler melden (sehr hilfreich für schnelle Fixes)
 
 Bitte poste bei Problemen möglichst:
