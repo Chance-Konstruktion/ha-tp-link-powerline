@@ -38,6 +38,10 @@ class TpLinkPowerlineConfigFlow(ConfigFlow, domain=DOMAIN):
         """Step 1: Check permissions and discover devices."""
         errors: dict[str, str] = {}
 
+        # Abort if ANY entry for this domain already exists
+        if self._async_current_entries():
+            return self.async_abort(reason="already_configured")
+
         available = await self.hass.async_add_executor_job(is_available)
         if not available:
             return self.async_abort(reason="raw_socket_unavailable")
