@@ -9,7 +9,12 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
+
+try:
+    from homeassistant.config_entries import ConfigFlowResult
+except ImportError:
+    from homeassistant.data_entry_flow import FlowResult as ConfigFlowResult
 
 from .const import (
     CONF_SCAN_INTERVAL,
