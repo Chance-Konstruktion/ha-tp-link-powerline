@@ -346,6 +346,7 @@ class HomeplugAV:
         self._src_mac = b"\x00" * 6
         self._seq = 1
         self._chipset = "unknown"  # "broadcom" or "qualcomm"
+        self._led_success_macs: set[str] = set()
 
     def _next_seq(self) -> int:
         s = self._seq
@@ -432,6 +433,20 @@ class HomeplugAV:
         return {"mac": mac, "plcmac": mac, "model": "",
                 "firmware_ver": "", "tx_rate": 0, "rx_rate": 0}
 
+    def _annotate_capabilities(self, devices: dict[str, dict]) -> None:
+        """Attach capability hints per adapter for diagnostics."""
+        for mac, dev in devices.items():
+            dev["chipset"] = self._chipset
+            dev["capabilities"] = {
+                "supports_standard_discovery": True,
+                "supports_vendor_mx": self._chipset == "broadcom",
+                "supports_vendor_qca": self._chipset == "qualcomm",
+                "supports_rate_polling": (
+                    dev.get("tx_rate", 0) > 0 or dev.get("rx_rate", 0) > 0
+                ),
+                "supports_led_control": mac.upper() in self._led_success_macs,
+            }
+
     # ── Discovery ──────────────────────────────────────────
 
     def discover(self, timeout: float = 5.0) -> list[dict]:
@@ -486,6 +501,7 @@ class HomeplugAV:
 
         # Step 4: Get firmware/model info
         self._fetch_device_info(devices)
+        self._annotate_capabilities(devices)
 
         self._close()
         _LOGGER.info("HomePlug AV: %d adapters (chipset=%s)",
@@ -501,9 +517,82 @@ class HomeplugAV:
     def _fetch_rates(self, devices: dict) -> bool:
         found = False
 
-        # ── A: MX GET_STATION_INFO (0xA080) UNICAST to each adapter ──
-        # pla-util added get-station-info and changed get-network-stats
-        # specifically for TL-PA7017. Unicast is key for Broadcom.
+        # ── A: MX NW_STATS (0xA034) — primary Broadcom rate method ──
+        # This is the dedicated PHY rate request for Broadcom chipsets.
+        # Unicast to each adapter, then broadcast as fallback.
+        _LOGGER.debug("Trying MX NW_STATS (0xA034) unicast...")
+        for mac in list(devices.keys()):
+            dst = mac_to_bytes(mac)
+            frame = build_mx_frame(dst, self._src_mac,
+                                   MX_NW_STATS_REQ,
+                                   seq=self._next_seq())
+            for mmtype, src, data in self._send_recv(
+                    self._sock_mx, frame, 2.0):
+                if mmtype == MX_NW_STATS_CNF:
+                    self._chipset = "broadcom"
+                    for sta in parse_mx_nw_stats_cnf(data):
+                        m = sta["mac"]
+                        tx = sta.get("tx_rate", 0)
+                        rx = sta.get("rx_rate", 0)
+                        if tx > 0 or rx > 0:
+                            devices.setdefault(m, self._new_dev(m))
+                            devices[m]["tx_rate"] = tx
+                            devices[m]["rx_rate"] = rx
+                            found = True
+                            _LOGGER.info("NW_STATS unicast: "
+                                         "%s TX=%d RX=%d", m, tx, rx)
+
+        if not found:
+            _LOGGER.debug("Trying MX NW_STATS (0xA034) broadcast...")
+            frame = build_mx_frame(BROADCAST_MAC, self._src_mac,
+                                   MX_NW_STATS_REQ,
+                                   seq=self._next_seq())
+            for mmtype, src, data in self._send_recv(
+                    self._sock_mx, frame, 3.0):
+                if mmtype == MX_NW_STATS_CNF:
+                    self._chipset = "broadcom"
+                    for sta in parse_mx_nw_stats_cnf(data):
+                        m = sta["mac"]
+                        tx = sta.get("tx_rate", 0)
+                        rx = sta.get("rx_rate", 0)
+                        if tx > 0 or rx > 0:
+                            devices.setdefault(m, self._new_dev(m))
+                            devices[m]["tx_rate"] = tx
+                            devices[m]["rx_rate"] = rx
+                            found = True
+                            _LOGGER.info("NW_STATS broadcast: "
+                                         "%s TX=%d RX=%d", m, tx, rx)
+
+        if found:
+            return True
+
+        # ── B: MX LINK_STATS (0xA032) UNICAST — per-link rate query ──
+        _LOGGER.debug("Trying MX LINK_STATS (0xA032) unicast...")
+        for mac in list(devices.keys()):
+            dst = mac_to_bytes(mac)
+            frame = build_mx_frame(dst, self._src_mac,
+                                   MX_LINK_STATS_REQ,
+                                   seq=self._next_seq())
+            for mmtype, src, data in self._send_recv(
+                    self._sock_mx, frame, 2.0):
+                if mmtype == MX_LINK_STATS_CNF:
+                    self._chipset = "broadcom"
+                    for sta in parse_mx_nw_stats_cnf(data):
+                        m = sta["mac"]
+                        tx = sta.get("tx_rate", 0)
+                        rx = sta.get("rx_rate", 0)
+                        if tx > 0 or rx > 0:
+                            devices.setdefault(m, self._new_dev(m))
+                            devices[m]["tx_rate"] = tx
+                            devices[m]["rx_rate"] = rx
+                            found = True
+                            _LOGGER.info("LINK_STATS: "
+                                         "%s TX=%d RX=%d", m, tx, rx)
+
+        if found:
+            return True
+
+        # ── C: MX GET_STATION_INFO (0xA080) UNICAST to each adapter ──
         _LOGGER.debug("Trying MX GET_STATION_INFO (0xA080) unicast...")
         for mac in list(devices.keys()):
             dst = mac_to_bytes(mac)
@@ -522,9 +611,7 @@ class HomeplugAV:
         if found:
             return True
 
-        # ── B: MX NW_INFO UNICAST (0xA028) per adapter ──
-        # Broadcast NW_INFO returned 0 stations on TL-PA7017.
-        # Unicast may behave differently.
+        # ── D: MX NW_INFO UNICAST (0xA028) per adapter ──
         _LOGGER.debug("Trying MX NW_INFO (0xA028) UNICAST per adapter...")
         for mac in list(devices.keys()):
             dst = mac_to_bytes(mac)
@@ -552,7 +639,7 @@ class HomeplugAV:
         if found:
             return True
 
-        # ── C: MX NW_INFO BROADCAST (original approach) ──
+        # ── E: MX NW_INFO BROADCAST (0xA028) ──
         _LOGGER.debug("Trying MX NW_INFO (0xA028) broadcast...")
         frame = build_mx_frame(
             BROADCAST_MAC, self._src_mac, MX_NW_INFO_REQ,
@@ -574,34 +661,7 @@ class HomeplugAV:
         if found:
             return True
 
-        # ── D: MX GET_PARAM scan for PHY rate parameters ──
-        # Broadcom may expose rates as GET_PARAM parameters.
-        # Try a range of parameter IDs including known candidates.
-        _LOGGER.debug("Trying MX GET_PARAM PHY rate scan...")
-        first_mac = next(iter(devices), None)
-        if first_mac:
-            dst = mac_to_bytes(first_mac)
-            for pid in range(0x0030, 0x0060):
-                frame = build_mx_frame(
-                    dst, self._src_mac, MX_GET_PARAM_REQ,
-                    seq=self._next_seq(),
-                    payload=struct.pack("<H", pid))
-                for mmtype, src, data in self._send_recv(
-                        self._sock_mx, frame, 0.6):
-                    if mmtype == MX_GET_PARAM_CNF:
-                        val = parse_mx_get_param_cnf(data)
-                        if len(val) >= 4:
-                            _LOGGER.info(
-                                "  GET_PARAM 0x%04X from %s: "
-                                "%d bytes hex=%s",
-                                pid, src, len(val),
-                                val[:40].hex())
-                    elif mmtype not in (0x6046,):
-                        _LOGGER.debug(
-                            "  GET_PARAM 0x%04X: MME=0x%04X",
-                            pid, mmtype)
-
-        # ── E: Qualcomm VS_NW_STATS on 0x88E1 (fallback) ──
+        # ── F: Qualcomm VS_NW_STATS on 0x88E1 (fallback) ──
         _LOGGER.debug("Trying QCA VS_NW_STATS (0xA048) on 0x88E1...")
         frame = build_qca_frame(BROADCAST_MAC, self._src_mac,
                                 VS_NW_STATS_REQ)
@@ -737,6 +797,7 @@ class HomeplugAV:
                     _LOGGER.debug("  LED MX resp: 0x%04X from %s", mmtype, src)
                     if mmtype == cnf:
                         _LOGGER.info("LED works via %s!", name)
+                        self._led_success_macs.add(mac.upper())
                         return True
 
             # Qualcomm strategies
@@ -753,6 +814,7 @@ class HomeplugAV:
                         self._sock_hpav, frame, 1.5):
                     if mmtype == expect:
                         _LOGGER.info("LED works via %s!", name)
+                        self._led_success_macs.add(mac.upper())
                         return True
 
             _LOGGER.warning(
@@ -817,6 +879,18 @@ class HomeplugAV:
         for mac in sorted(disc_macs):
             dst = mac_to_bytes(mac)
             tests.extend([
+                (f"MX NW_STATS unicast (0xA034) → {mac}",
+                 self._sock_mx,
+                 build_mx_frame(dst, self._src_mac,
+                                MX_NW_STATS_REQ,
+                                seq=self._next_seq())),
+
+                (f"MX LINK_STATS unicast (0xA032) → {mac}",
+                 self._sock_mx,
+                 build_mx_frame(dst, self._src_mac,
+                                MX_LINK_STATS_REQ,
+                                seq=self._next_seq())),
+
                 (f"MX GET_STATION_INFO (0xA080) → {mac}",
                  self._sock_mx,
                  build_mx_frame(dst, self._src_mac,
@@ -893,7 +967,7 @@ class HomeplugAV:
                     txt = val.decode("ascii", errors="replace"
                                      ).rstrip("\x00")
                     lines.append(f"    > Value: {txt}")
-                elif mmtype == MX_NW_STATS_CNF:
+                elif mmtype in (MX_NW_STATS_CNF, MX_LINK_STATS_CNF):
                     for sta in parse_mx_nw_stats_cnf(data):
                         lines.append(
                             f"    > {sta['mac']} "

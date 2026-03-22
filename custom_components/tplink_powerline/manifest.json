@@ -3,6 +3,7 @@
   "name": "Powerline Network",
   "codeowners": [],
   "config_flow": true,
+  "single_config_entry": true,
   "dependencies": [],
   "documentation": "https://github.com/Chance-Konstruktion/ha-tp-link-powerline",
   "integration_type": "hub",
