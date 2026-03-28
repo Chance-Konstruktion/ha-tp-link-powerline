@@ -15,8 +15,9 @@ from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
-from .const import CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, PLATFORMS
+from .const import CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NETWORK_DEVICE_ID, PLATFORMS
 from .coordinator import TpLinkPowerlineCoordinator
 from .homeplug import is_available
 
@@ -50,10 +51,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Clean up stale/duplicate device entries from the registry
+    _cleanup_stale_devices(hass, entry, coordinator)
+
     # Listen for options changes (e.g. scan interval) — apply without restart
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     return True
+
+
+def _cleanup_stale_devices(
+    hass: HomeAssistant, entry: ConfigEntry, coordinator: TpLinkPowerlineCoordinator
+) -> None:
+    """Remove stale/duplicate device entries from the device registry."""
+    dev_reg = dr.async_get(hass)
+    # Valid identifiers: network device + all currently known MACs
+    valid_ids: set[tuple[str, str]] = {(DOMAIN, NETWORK_DEVICE_ID)}
+    for mac in coordinator.devices:
+        valid_ids.add((DOMAIN, mac))
+
+    # Find and remove devices registered under our domain that are no longer valid
+    for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
+        if not any(ident in valid_ids for ident in device.identifiers):
+            _LOGGER.info("Removing stale device: %s (%s)", device.name, device.identifiers)
+            dev_reg.async_remove_device(device.id)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
