@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .homeplug import async_diagnose
-from .sensor import _network_device_info
+from .sensor import network_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,13 +30,13 @@ class DiagnosticButton(ButtonEntity):
     """Button that runs full HomePlug AV diagnostics and logs raw frames."""
 
     _attr_has_entity_name = True
-    _attr_name = "Diagnose"
     _attr_icon = "mdi:stethoscope"
+    _attr_translation_key = "diagnose"
 
     def __init__(self, interface: str | None) -> None:
         self._interface = interface
         self._attr_unique_id = "tplink_plc_diagnose"
-        self._attr_device_info = _network_device_info()
+        self._attr_device_info = network_device_info()
 
     async def async_press(self) -> None:
         """Run diagnostics and log results."""

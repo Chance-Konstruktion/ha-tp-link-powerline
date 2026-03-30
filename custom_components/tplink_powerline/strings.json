@@ -11,12 +11,12 @@
       }
     },
     "error": {
-      "no_devices_found": "No Powerline adapters found. Make sure adapters are plugged in and paired.",
-      "no_interface": "No suitable network interface found."
+      "no_devices_found": "No Powerline adapters found. Check that adapters are plugged in, paired, and connected via Ethernet cable. Home Assistant needs CAP_NET_RAW.",
+      "no_interface": "No suitable network interface found. Make sure an Ethernet cable is connected."
     },
     "abort": {
       "already_configured": "This Powerline network is already configured.",
-      "raw_socket_unavailable": "Raw socket access not available. Home Assistant needs CAP_NET_RAW capability. For Docker: use --cap-add=NET_RAW --network=host"
+      "raw_socket_unavailable": "Raw socket access not available. Home Assistant needs CAP_NET_RAW capability.\n\nFor Docker: use --cap-add=NET_RAW --network=host\nFor HAOS: install as add-on with host network\nFor venv: sudo setcap cap_net_raw+ep $(readlink -f $(which python3))"
     }
   },
   "options": {
@@ -28,6 +28,25 @@
     },
     "data": {
       "scan_interval": "Scan interval (seconds)"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "tx_total": { "name": "TX Total" },
+      "rx_total": { "name": "RX Total" },
+      "adapters_online": { "name": "Adapters Online" },
+      "adapters_total": { "name": "Adapters Total" },
+      "tx_rate": { "name": "TX Rate" },
+      "rx_rate": { "name": "RX Rate" }
+    },
+    "binary_sensor": {
+      "connectivity": { "name": "Status" }
+    },
+    "switch": {
+      "led": { "name": "LED" }
+    },
+    "button": {
+      "diagnose": { "name": "Diagnose" }
     }
   }
 }
