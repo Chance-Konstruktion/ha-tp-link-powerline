@@ -3,31 +3,50 @@
     "step": {
       "user": {
         "title": "Powerline Netzwerk",
-        "description": "Klicke 'Weiter' um nach Powerline-Adaptern in deinem Netzwerk zu suchen.\n\nBenötigt Raw-Socket-Zugriff (CAP_NET_RAW).\n\nUnterstützt: TP-Link, FRITZ!Powerline, devolo und andere HomePlug AV Adapter."
+        "description": "Klicke 'Weiter' um nach Powerline-Adaptern in deinem Netzwerk zu suchen.\n\nBen\u00f6tigt Raw-Socket-Zugriff (CAP_NET_RAW).\n\nUnterst\u00fctzt: TP-Link, FRITZ!Powerline, devolo und andere HomePlug AV Adapter."
       },
       "confirm": {
-        "title": "Geräte gefunden",
-        "description": "{count} Powerline-Adapter gefunden:\n\n{devices}\n\nKlicke 'Absenden' um sie hinzuzufügen."
+        "title": "Ger\u00e4te gefunden",
+        "description": "{count} Powerline-Adapter gefunden:\n\n{devices}\n\nKlicke 'Absenden' um sie hinzuzuf\u00fcgen."
       }
     },
     "error": {
-      "no_devices_found": "Keine Powerline-Adapter gefunden. Stelle sicher, dass die Adapter eingesteckt und gepairt sind.",
-      "no_interface": "Kein geeignetes Netzwerk-Interface gefunden."
+      "no_devices_found": "Keine Powerline-Adapter gefunden. Pr\u00fcfe ob die Adapter eingesteckt, gepairt und per Ethernet-Kabel verbunden sind. Home Assistant ben\u00f6tigt CAP_NET_RAW.",
+      "no_interface": "Kein geeignetes Netzwerk-Interface gefunden. Stelle sicher, dass ein Ethernet-Kabel angeschlossen ist."
     },
     "abort": {
       "already_configured": "Dieses Powerline-Netzwerk ist bereits konfiguriert.",
-      "raw_socket_unavailable": "Raw-Socket-Zugriff nicht verfügbar. Home Assistant benötigt CAP_NET_RAW. Für Docker: --cap-add=NET_RAW --network=host verwenden."
+      "raw_socket_unavailable": "Raw-Socket-Zugriff nicht verf\u00fcgbar. Home Assistant ben\u00f6tigt CAP_NET_RAW.\n\nF\u00fcr Docker: --cap-add=NET_RAW --network=host verwenden\nF\u00fcr HAOS: Als Add-on mit Host-Netzwerk installieren\nF\u00fcr venv: sudo setcap cap_net_raw+ep $(readlink -f $(which python3))"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Powerline Netzwerk Optionen",
-        "description": "Polling-Verhalten anpassen. Änderungen werden sofort wirksam."
+        "description": "Polling-Verhalten anpassen. \u00c4nderungen werden sofort wirksam."
       }
     },
     "data": {
       "scan_interval": "Scan-Intervall (Sekunden)"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "tx_total": { "name": "TX Gesamt" },
+      "rx_total": { "name": "RX Gesamt" },
+      "adapters_online": { "name": "Adapter Online" },
+      "adapters_total": { "name": "Adapter Gesamt" },
+      "tx_rate": { "name": "TX Rate" },
+      "rx_rate": { "name": "RX Rate" }
+    },
+    "binary_sensor": {
+      "connectivity": { "name": "Status" }
+    },
+    "switch": {
+      "led": { "name": "LED" }
+    },
+    "button": {
+      "diagnose": { "name": "Diagnose" }
     }
   }
 }

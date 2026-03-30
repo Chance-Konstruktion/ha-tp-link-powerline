@@ -89,20 +89,35 @@ def mac_to_bytes(s: str) -> bytes:
     return bytes.fromhex(s.replace(":", "").replace("-", "").replace(" ", ""))
 
 def _find_interface() -> str | None:
+    """Find the best Ethernet interface for HomePlug AV.
+
+    Prioritizes physical Ethernet (eth*, en*) over other interfaces.
+    Skips virtual/container interfaces.
+    """
     try:
         ifaces = os.listdir("/sys/class/net/")
     except OSError:
         return None
+
+    skip_prefixes = ("lo", "veth", "docker", "br-", "vir", "wl", "ww", "tun", "tap")
+    # Prefer eth*/en* (physical Ethernet), then anything else
+    prefer = []
+    fallback = []
     for iface in sorted(ifaces):
-        if iface == "lo" or iface.startswith(("veth", "docker", "br-", "vir")):
+        if iface.startswith(skip_prefixes):
             continue
         try:
             with open(f"/sys/class/net/{iface}/operstate") as f:
-                if f.read().strip() in ("up", "unknown"):
-                    return iface
+                if f.read().strip() not in ("up", "unknown"):
+                    continue
         except OSError:
             continue
-    return None
+        if iface.startswith(("eth", "en")):
+            prefer.append(iface)
+        else:
+            fallback.append(iface)
+
+    return (prefer or fallback or [None])[0]
 
 def get_iface_mac(iface: str) -> bytes:
     try:
@@ -353,29 +368,37 @@ class HomeplugAV:
         self._seq = (self._seq % 255) + 1
         return s
 
+    def _open_socket(self, ethertype: int, retries: int = 2) -> socket.socket:
+        """Open a raw socket with retry on transient errors."""
+        if not self.interface:
+            raise OSError("No Ethernet interface found")
+        last_err: Exception | None = None
+        for attempt in range(1 + retries):
+            try:
+                s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
+                                  socket.htons(ethertype))
+                s.bind((self.interface, ethertype))
+                self._src_mac = get_iface_mac(self.interface)
+                return s
+            except OSError as e:
+                last_err = e
+                if attempt < retries:
+                    time.sleep(0.5 * (attempt + 1))
+                    _LOGGER.debug("Socket open retry %d for 0x%04X: %s",
+                                  attempt + 1, ethertype, e)
+        raise last_err  # type: ignore[misc]
+
     def _open_hpav(self) -> socket.socket:
         if self._sock_hpav:
             return self._sock_hpav
-        if not self.interface:
-            raise OSError("No Ethernet interface found")
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
-                          socket.htons(ETHERTYPE_HPAV))
-        s.bind((self.interface, ETHERTYPE_HPAV))
-        self._src_mac = get_iface_mac(self.interface)
-        self._sock_hpav = s
-        return s
+        self._sock_hpav = self._open_socket(ETHERTYPE_HPAV)
+        return self._sock_hpav
 
     def _open_mx(self) -> socket.socket:
         if self._sock_mx:
             return self._sock_mx
-        if not self.interface:
-            raise OSError("No Ethernet interface found")
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
-                          socket.htons(ETHERTYPE_MEDIAXTREAM))
-        s.bind((self.interface, ETHERTYPE_MEDIAXTREAM))
-        self._src_mac = get_iface_mac(self.interface)
-        self._sock_mx = s
-        return s
+        self._sock_mx = self._open_socket(ETHERTYPE_MEDIAXTREAM)
+        return self._sock_mx
 
     def _close(self):
         for attr in ("_sock_hpav", "_sock_mx"):

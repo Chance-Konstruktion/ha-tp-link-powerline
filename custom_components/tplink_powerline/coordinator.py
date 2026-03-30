@@ -1,9 +1,10 @@
 """DataUpdateCoordinator for Powerline Network.
 
-Uses HomePlug AV raw Ethernet (Layer 2) — no IP needed.
-Discovers new devices every poll cycle (default 60s).
+Uses HomePlug AV raw Ethernet (Layer 2) -- no IP needed.
+Discovers new devices every poll cycle (default 120s).
 """
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any, Callable
@@ -13,21 +14,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, get_mac
-from .homeplug import HomeplugAV
 
 _LOGGER = logging.getLogger(__name__)
 
+LED_SET_TIMEOUT = 10.0
+
 
 class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Polls Powerline adapters via HomePlug AV Layer 2.
-
-    Every poll cycle:
-    1. Full discovery (CC_DISCOVER_LIST) to find new/removed adapters
-    2. Rate fetching (MEDIAXTREAM / Qualcomm) for TX/RX PHY rates
-    3. Device info queries for newly found devices
-
-    New devices are tracked and platforms are notified to create entities.
-    """
+    """Polls Powerline adapters via HomePlug AV Layer 2."""
 
     config_entry: ConfigEntry
 
@@ -38,11 +32,14 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         initial_devices: list[dict[str, Any]],
         scan_interval: int = DEFAULT_SCAN_INTERVAL,
     ) -> None:
+        from .homeplug import HomeplugAV
+
         self.hp = HomeplugAV(interface)
         self.interface = interface or self.hp.interface
         self.devices: dict[str, dict[str, Any]] = {}
         self._known_macs: set[str] = set()
         self._new_device_callbacks: list[Callable[[list[dict[str, Any]]], None]] = []
+        self.led_states: dict[str, bool] = {}
 
         # Index initial devices by MAC
         for dev in initial_devices:
@@ -50,6 +47,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if mac:
                 self.devices[mac] = dev
                 self._known_macs.add(mac)
+                self.led_states[mac] = True  # assume on
 
         super().__init__(
             hass, _LOGGER,
@@ -64,7 +62,6 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Full discovery + stats every poll cycle."""
         try:
-            # Full discovery every time — finds new and existing devices
             discovered = await self.hass.async_add_executor_job(
                 self.hp.discover, 5.0
             )
@@ -80,6 +77,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self.devices[mac].update(dev)
                 else:
                     self.devices[mac] = dev
+                    self.led_states.setdefault(mac, True)
                     _LOGGER.info("New Powerline adapter discovered: %s (FW: %s)",
                                  mac, dev.get("firmware_ver", "?"))
 
@@ -130,7 +128,16 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_set_led(self, mac: str, on: bool) -> bool:
         """Set LED on a specific adapter (by MAC)."""
         try:
-            return await self.hass.async_add_executor_job(self.hp.set_led, mac, on)
+            result = await asyncio.wait_for(
+                self.hass.async_add_executor_job(self.hp.set_led, mac, on),
+                timeout=LED_SET_TIMEOUT,
+            )
+            if result:
+                self.led_states[mac] = on
+            return result
+        except asyncio.TimeoutError:
+            _LOGGER.warning("LED control timed out for %s", mac)
+            return False
         except Exception:
             _LOGGER.exception("LED control crashed for %s (on=%s)", mac, on)
             return False
