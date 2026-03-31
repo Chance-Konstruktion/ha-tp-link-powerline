@@ -330,8 +330,10 @@ def parse_mx_status_ind(data: bytes) -> dict | None:
 
     The adapter broadcasts this every 2-5 seconds on 0x8912.
     Payload (after MX header):
+      Bytes 0-3: status flags / device state
       Bytes 4-5 (LE): TX rate / 2 (multiply by 2 for PHY rate in Mbps)
       Bytes 6-7 (LE): RX rate / 2 (multiply by 2 for PHY rate in Mbps)
+      Bytes 8+: additional state (LED, QoS, power saving indicators)
     """
     off = ETH_HDR + MX_MME_HDR
     payload = data[off:] if len(data) > off else b""
@@ -340,11 +342,16 @@ def parse_mx_status_ind(data: bytes) -> dict | None:
     src = mac_to_str(data[6:12])
     tx_raw = struct.unpack("<H", payload[4:6])[0]
     rx_raw = struct.unpack("<H", payload[6:8])[0]
-    return {
+    result = {
         "mac": src, "plcmac": src,
         "tx_rate": tx_raw * 2,
         "rx_rate": rx_raw * 2,
     }
+    # Log extended payload for state analysis (first time per session)
+    if len(payload) > 8:
+        _LOGGER.debug("0x6046 full payload from %s (%d bytes): %s",
+                      src, len(payload), payload.hex())
+    return result
 
 
 def parse_qca_nw_stats_cnf(data: bytes) -> list[dict]:
@@ -876,6 +883,120 @@ class HomeplugAV:
                                 ver = data[off+3:off+3+ver_len].decode(
                                     "ascii", errors="ignore").rstrip("\x00")
                                 devices[mac]["firmware_ver"] = ver
+
+    # ── State Query ───────────────────────────────────────
+
+    # GET_PARAM IDs for device settings (trial IDs for Broadcom BCM60xxx).
+    # Standard IDs from pla-util: 0x0001 (HFID), 0x0025 (User HFID).
+    # Settings IDs are not officially documented; these are common candidates.
+    _STATE_PARAM_IDS = [0x0040, 0x0041, 0x0042, 0x0043, 0x0050, 0x0060]
+
+    def query_device_states(self, macs: list[str]) -> dict[str, dict]:
+        """Query LED, QoS, and power saving state from each adapter.
+
+        Returns {mac: {"led": bool|None, "qos": str|None, "power_saving": bool|None}}.
+        Uses GET_PARAM with trial parameter IDs and analyzes responses.
+        """
+        try:
+            self._open_hpav()
+            self._open_mx()
+        except (PermissionError, OSError):
+            return {}
+
+        states: dict[str, dict] = {}
+        try:
+            for mac in macs:
+                states[mac] = {"led": None, "qos": None, "power_saving": None}
+                if self._chipset not in ("broadcom", "unknown"):
+                    continue
+
+                dst = mac_to_bytes(mac)
+
+                # Try GET_PARAM with various IDs to find state parameters
+                for param_id in self._STATE_PARAM_IDS:
+                    frame = build_mx_frame(
+                        dst, self._src_mac, MX_GET_PARAM_REQ,
+                        seq=self._next_seq(),
+                        payload=struct.pack("<H", param_id))
+                    for mmtype, src, data in self._send_recv(
+                            self._sock_mx, frame, 1.0):
+                        if mmtype == MX_GET_PARAM_CNF:
+                            val = parse_mx_get_param_cnf(data)
+                            _LOGGER.debug(
+                                "GET_PARAM 0x%04X from %s: %s",
+                                param_id, mac, val.hex() if val else "empty")
+                            # Try to identify LED state from known patterns
+                            self._parse_state_from_param(
+                                states[mac], param_id, val)
+
+                # Also listen briefly for 0x6046 to extract state bits
+                for mmtype, src, data in self._listen(self._sock_mx, 3.0):
+                    if mmtype == MX_STATUS_IND and src.upper() == mac.upper():
+                        self._parse_state_from_status(states[mac], data)
+                        break  # Got one status from this adapter
+
+        except Exception:
+            _LOGGER.debug("State query exception", exc_info=True)
+        finally:
+            self._close()
+
+        return states
+
+    def _parse_state_from_param(self, state: dict, param_id: int,
+                                 val: bytes) -> None:
+        """Try to extract LED/QoS/PS state from a GET_PARAM response."""
+        if not val or len(val) < 1:
+            return
+
+        # Known Broadcom patterns for LED state:
+        # Some adapters return a settings block where byte patterns indicate state.
+        # LED ON typically has 0x95 or 0x01, LED OFF has 0x4e or 0x00.
+        if param_id == 0x0040 and len(val) >= 1:
+            # Candidate: LED state parameter
+            if val[0] in (0x01, 0x95):
+                state["led"] = True
+                _LOGGER.info("LED state queried from %s via 0x%04X: ON", "adapter", param_id)
+            elif val[0] in (0x00, 0x4e):
+                state["led"] = False
+                _LOGGER.info("LED state queried from %s via 0x%04X: OFF", "adapter", param_id)
+
+        # QoS state: look for priority class bytes
+        if param_id == 0x0041 and len(val) >= 1:
+            qos_map = {0x38: "gaming", 0x78: "voip", 0x58: "audio_video", 0x18: "internet"}
+            if val[0] in qos_map:
+                state["qos"] = qos_map[val[0]]
+                _LOGGER.info("QoS state queried via 0x%04X: %s", param_id, state["qos"])
+
+        # Power saving state
+        if param_id == 0x0042 and len(val) >= 1:
+            if val[0] in (0x01, 0x05, 0x53):
+                state["power_saving"] = True
+                _LOGGER.info("Power saving queried via 0x%04X: ON", param_id)
+            elif val[0] in (0x00, 0xec):
+                state["power_saving"] = False
+                _LOGGER.info("Power saving queried via 0x%04X: OFF", param_id)
+
+    def _parse_state_from_status(self, state: dict, data: bytes) -> None:
+        """Try to extract state bits from 0x6046 status indication payload."""
+        off = ETH_HDR + MX_MME_HDR
+        payload = data[off:] if len(data) > off else b""
+        if len(payload) < 12:
+            return
+
+        # Bytes 0-3 often contain status flags
+        flags = struct.unpack("<I", payload[0:4])[0]
+        _LOGGER.debug("0x6046 status flags: 0x%08X, extra bytes: %s",
+                      flags, payload[8:min(len(payload), 24)].hex())
+
+        # Common Broadcom patterns in 0x6046 status:
+        # Bit patterns for LED/PS state vary by firmware.
+        # Log for now, will refine once patterns are confirmed.
+        if len(payload) >= 16:
+            # Some firmware versions include LED state in byte 8 or 12
+            byte8 = payload[8]
+            byte12 = payload[12] if len(payload) > 12 else 0
+            _LOGGER.debug("0x6046 state candidates: byte8=0x%02X byte12=0x%02X",
+                          byte8, byte12)
 
     # ── LED Control ──────────────────────────────────────
 
