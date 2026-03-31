@@ -996,73 +996,75 @@ class HomeplugAV:
     # ── QoS Priority Control ────────────────────────────
 
     # QoS uses a two-frame sequence via MX_ACTION_REQ (0xA058):
-    #   Frame 1: short (30 bytes) — Byte 1 of payload is the priority indicator
-    #   Frame 2: long (up to 400 bytes) — detailed traffic classification rules
+    #   Frame 1: short (30 bytes) — confirmed from Wireshark captures
+    #   Frame 2: long (variable) — traffic classification rules
     #
-    # Byte 1 (payload[1]) values per priority:
-    #   Gaming:     short=0x54, long=0x16  (pattern: 00 e8 03 00 e8 38)
-    #   VoIP:       short=0xa7, long=0x22  (pattern: 00 e8 03 00 e8 78)
-    #   Audio/Video: short=0xcd, long=0xcc (pattern: 00 e8 03 00 e8 58)
-    #   Internet:   short=0x8f, long=0x60  (pattern: 00 e8 03 00 e8 18)
+    # Short frame structure: [indicator] 69 00 00 ... (30 bytes, 0x00 padded)
+    # Long frame structure:  [indicator] 69 00 01 e8 03 00 e8 [class] 00 01 02 ff...
+    #
+    # Priority indicators (Byte 23 of Ethernet frame = payload[0]):
+    #   Gaming:      short=0x54, long=0x16  class=0x38
+    #   VoIP:        short=0xa7, long=0x22  class=0x78
+    #   Audio/Video: short=0xcd, long=0xcc  class=0x58
+    #   Internet:    short=0x8f, long=0x60  class=0x18
 
-    # Short frames (30 bytes each) — first byte is a command prefix
+    # Short frames (30 bytes each) — from Wireshark captures
     _QOS_SHORT = {
-        "gaming":      bytes.fromhex("005400020100000000000000000000000000000000000000000000000000"),
-        "voip":        bytes.fromhex("00a700020100000000000000000000000000000000000000000000000000"),
-        "audio_video": bytes.fromhex("00cd00020100000000000000000000000000000000000000000000000000"),
-        "internet":    bytes.fromhex("008f00020100000000000000000000000000000000000000000000000000"),
+        "gaming":      bytes.fromhex("546900000000000000000000000000000000000000000000000000000000"),
+        "voip":        bytes.fromhex("a76900000000000000000000000000000000000000000000000000000000"),
+        "audio_video": bytes.fromhex("cd6900000000000000000000000000000000000000000000000000000000"),
+        "internet":    bytes.fromhex("8f6900000000000000000000000000000000000000000000000000000000"),
     }
 
-    # Long frames — traffic classification rules with 0xff padding
-    # Structure: [cmd] [indicator] [header bytes] [rule blocks with e8 03 pattern] [ff padding]
+    # Long frames — traffic classification rules from Wireshark captures.
+    # Structure: [indicator] 69 00 01 e8 03 00 e8 [class_byte] 00 01 02
+    #            followed by rule blocks (ff ff ff masks, port ranges, etc.)
+    # These are reconstructed from the confirmed patterns.
+    # If the adapter doesn't accept them, replace with full Wireshark hex dumps.
     _QOS_LONG = {
         "gaming": bytes.fromhex(
-            "0016000201000000"
-            "00e80300e838000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e838000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e838000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e838000102"
-            "ffffffffffff00ffffffffffff"
-            "0000000000000000000000000000000000000000"
+            "166900"               # indicator + 69 00
+            "01e80300e838"         # rule header: class=0x38 (gaming)
+            "000102"               # rule type
+            "ffffffffffff00"       # MAC mask (any)
+            "ffffffffffff00"       # MAC mask (any)
+            "0000ffff"             # port range: all
+            "0000ffff"             # port range: all
+            "00"                   # protocol: any
+            "00000000000000000000" # padding
         ),
         "voip": bytes.fromhex(
-            "0022000201000000"
-            "00e80300e878000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e878000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e878000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e878000102"
-            "ffffffffffff00ffffffffffff"
-            "0000000000000000000000000000000000000000"
+            "226900"               # indicator + 69 00
+            "01e80300e878"         # rule header: class=0x78 (voip)
+            "000102"               # rule type
+            "ffffffffffff00"       # MAC mask
+            "ffffffffffff00"       # MAC mask
+            "0000ffff"             # port range
+            "0000ffff"             # port range
+            "00"                   # protocol
+            "00000000000000000000" # padding
         ),
         "audio_video": bytes.fromhex(
-            "00cc000201000000"
-            "00e80300e858000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e858000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e858000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e858000102"
-            "ffffffffffff00ffffffffffff"
-            "0000000000000000000000000000000000000000"
+            "cc6900"               # indicator + 69 00
+            "01e80300e858"         # rule header: class=0x58 (audio/video)
+            "000102"               # rule type
+            "ffffffffffff00"       # MAC mask
+            "ffffffffffff00"       # MAC mask
+            "0000ffff"             # port range
+            "0000ffff"             # port range
+            "00"                   # protocol
+            "00000000000000000000" # padding
         ),
         "internet": bytes.fromhex(
-            "0060000201000000"
-            "00e80300e818000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e818000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e818000102"
-            "ffffffffffff00ffffffffffff"
-            "00e80300e818000102"
-            "ffffffffffff00ffffffffffff"
-            "0000000000000000000000000000000000000000"
+            "606900"               # indicator + 69 00
+            "01e80300e818"         # rule header: class=0x18 (internet)
+            "000102"               # rule type
+            "ffffffffffff00"       # MAC mask
+            "ffffffffffff00"       # MAC mask
+            "0000ffff"             # port range
+            "0000ffff"             # port range
+            "00"                   # protocol
+            "00000000000000000000" # padding
         ),
     }
 

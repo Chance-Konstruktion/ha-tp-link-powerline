@@ -6,7 +6,7 @@
   "dependencies": [],
   "documentation": "https://github.com/Chance-Konstruktion/ha-tp-link-powerline",
   "integration_type": "hub",
-  "iot_class": "local_polling",
+  "iot_class": "local_push",
   "requirements": [],
   "version": "4.2.0"
 }

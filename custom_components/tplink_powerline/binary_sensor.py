@@ -10,6 +10,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass, BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -38,6 +39,7 @@ class PlcConnectivitySensor(CoordinatorEntity[TpLinkPowerlineCoordinator], Binar
 
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_translation_key = "connectivity"
 
     def __init__(self, coordinator, mac: str, device_info) -> None:
