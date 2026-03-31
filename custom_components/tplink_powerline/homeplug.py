@@ -59,6 +59,9 @@ MX_LINK_STATS_REQ     = 0xA032  # Link Stats
 MX_LINK_STATS_CNF     = 0xA033
 MX_GET_STATION_REQ    = 0xA080  # Get Station Info
 MX_GET_STATION_CNF    = 0xA081
+MX_ACTION_REQ         = 0xA058  # Broadcom action command (LED, power saving, QoS)
+MX_ACTION_CNF         = 0xA059  # Response to action command
+MX_STATUS_IND         = 0x6046  # Periodic status indication (TX/RX rates, every 2-5s)
 
 # ── Qualcomm Vendor-Specific MMEs (0x88E1) ──
 VS_SW_VER_REQ   = 0xA000;  VS_SW_VER_CNF   = 0xA001
@@ -322,6 +325,28 @@ def parse_mx_nw_stats_cnf(data: bytes) -> list[dict]:
         stations.append({"mac": mac, "plcmac": mac, "tx_rate": tx, "rx_rate": rx})
     return stations
 
+def parse_mx_status_ind(data: bytes) -> dict | None:
+    """Parse MEDIAXTREAM periodic status indication (0x6046).
+
+    The adapter broadcasts this every 2-5 seconds on 0x8912.
+    Payload (after MX header):
+      Bytes 4-5 (LE): TX rate / 2 (multiply by 2 for PHY rate in Mbps)
+      Bytes 6-7 (LE): RX rate / 2 (multiply by 2 for PHY rate in Mbps)
+    """
+    off = ETH_HDR + MX_MME_HDR
+    payload = data[off:] if len(data) > off else b""
+    if len(payload) < 8:
+        return None
+    src = mac_to_str(data[6:12])
+    tx_raw = struct.unpack("<H", payload[4:6])[0]
+    rx_raw = struct.unpack("<H", payload[6:8])[0]
+    return {
+        "mac": src, "plcmac": src,
+        "tx_rate": tx_raw * 2,
+        "rx_rate": rx_raw * 2,
+    }
+
+
 def parse_qca_nw_stats_cnf(data: bytes) -> list[dict]:
     """Parse Qualcomm VS_NW_STATS.CNF (0xA049) from 0x88E1."""
     stations = []
@@ -535,10 +560,59 @@ class HomeplugAV:
                           d.get("firmware_ver", ""), d.get("model", ""))
         return list(devices.values())
 
+    # ── Passive Rate Monitoring ─────────────────────────────
+
+    def get_passive_rates(self, timeout: float = 6.0) -> dict[str, dict[str, int]]:
+        """Listen passively for 0x6046 status indications (Broadcom).
+
+        The adapter broadcasts TX/RX rates every 2-5 seconds.
+        Returns {mac: {"tx_rate": int, "rx_rate": int}}.
+        """
+        try:
+            self._open_mx()
+        except (PermissionError, OSError) as e:
+            _LOGGER.debug("Cannot open MX socket for passive rates: %s", e)
+            return {}
+
+        rates: dict[str, dict[str, int]] = {}
+        try:
+            for mmtype, src, data in self._listen(self._sock_mx, timeout):
+                if mmtype == MX_STATUS_IND:
+                    info = parse_mx_status_ind(data)
+                    if info and (info["tx_rate"] > 0 or info["rx_rate"] > 0):
+                        rates[info["mac"]] = {
+                            "tx_rate": info["tx_rate"],
+                            "rx_rate": info["rx_rate"],
+                        }
+                        _LOGGER.debug("0x6046 passive: %s TX=%d RX=%d",
+                                      info["mac"], info["tx_rate"], info["rx_rate"])
+        finally:
+            self._close()
+        return rates
+
     # ── Rate Fetching ─────────────────────────────────────
 
     def _fetch_rates(self, devices: dict) -> bool:
         found = False
+
+        # ── P: Passive 0x6046 listening (Broadcom, fastest) ──
+        # The adapter sends rates every 2-5s without us asking.
+        _LOGGER.debug("Trying passive 0x6046 listening (6s)...")
+        for mmtype, src, data in self._listen(self._sock_mx, 6.0):
+            if mmtype == MX_STATUS_IND:
+                info = parse_mx_status_ind(data)
+                if info and (info["tx_rate"] > 0 or info["rx_rate"] > 0):
+                    m = info["mac"]
+                    devices.setdefault(m, self._new_dev(m))
+                    devices[m]["tx_rate"] = info["tx_rate"]
+                    devices[m]["rx_rate"] = info["rx_rate"]
+                    found = True
+                    _LOGGER.info("0x6046 passive: %s TX=%d RX=%d",
+                                 m, info["tx_rate"], info["rx_rate"])
+
+        if found:
+            self._chipset = "broadcom"
+            return True
 
         # ── A: MX NW_STATS (0xA034) — primary Broadcom rate method ──
         # This is the dedicated PHY rate request for Broadcom chipsets.
@@ -797,7 +871,65 @@ class HomeplugAV:
 
     # ── LED Control ──────────────────────────────────────
 
+    # MEDIAXTREAM MX_ACTION_REQ (0xA058) payloads
+    # Confirmed via Wireshark on TL-PA7017 (BCM60355).
+    # Each payload is 30 bytes (padded with 0x00).
+    _LED_ON_PAYLOAD = bytes.fromhex(
+        "950002010000000000000000000000000000000000000000000000000000")
+    _LED_OFF_PAYLOAD = bytes.fromhex(
+        "4e9500020100470000000000000000000000000000000000000000000000")
+
+    # Energiesparmodus: enable requires two-step sequence
+    _POWER_SAVE_ON_1 = bytes.fromhex(
+        "532900000000000000000000000000000000000000000000000000000000")
+    _POWER_SAVE_ON_2 = bytes.fromhex(
+        "052900020100002c81000000000000000000000000000000000000000000")
+    _POWER_SAVE_OFF = bytes.fromhex(
+        "ec7400010100000000000000000000000000000000000000000000000000")
+
+    def _set_led_broadcom(self, mac: str, on: bool) -> bool:
+        """Set LED via MEDIAXTREAM MME 0xA058 (Broadcom BCM60xxx)."""
+        dst = mac_to_bytes(mac)
+        payload = self._LED_ON_PAYLOAD if on else self._LED_OFF_PAYLOAD
+        frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
+                               seq=self._next_seq(), payload=payload)
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                _LOGGER.info("LED %s via MX 0xA058 for %s", "ON" if on else "OFF", mac)
+                return True
+        return False
+
+    def _set_power_saving_broadcom(self, mac: str, on: bool) -> bool:
+        """Set power saving mode via MEDIAXTREAM MME 0xA058 (Broadcom)."""
+        dst = mac_to_bytes(mac)
+        if on:
+            # Two-step sequence for enabling power saving
+            frame1 = build_mx_frame(dst, self._src_mac, 0xA058,
+                                    seq=self._next_seq(), payload=self._POWER_SAVE_ON_1)
+            got_resp = False
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                    got_resp = True
+            if not got_resp:
+                _LOGGER.debug("Power saving step 1 got no response from %s", mac)
+
+            frame2 = build_mx_frame(dst, self._src_mac, 0xA058,
+                                    seq=self._next_seq(), payload=self._POWER_SAVE_ON_2)
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                    _LOGGER.info("Power saving ON for %s", mac)
+                    return True
+        else:
+            frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
+                                   seq=self._next_seq(), payload=self._POWER_SAVE_OFF)
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                    _LOGGER.info("Power saving OFF for %s", mac)
+                    return True
+        return False
+
     def set_led(self, mac: str, on: bool, timeout: float = 2.0) -> bool:
+        """Set LED on a specific adapter (by MAC)."""
         try:
             try:
                 self._open_hpav()
@@ -805,40 +937,31 @@ class HomeplugAV:
             except (PermissionError, OSError):
                 return False
 
-            dst = mac_to_bytes(mac)
-            led_val = b"\x01" if on else b"\x00"
+            # Try Broadcom MEDIAXTREAM first (most common for modern TP-Link)
+            if self._chipset in ("broadcom", "unknown"):
+                if self._set_led_broadcom(mac, on):
+                    self._led_success_macs.add(mac.upper())
+                    return True
 
-            # MEDIAXTREAM strategies (Broadcom)
-            mx_tests = [
-                ("MX SetKey 0xA018", MX_SET_KEY_REQ, led_val, MX_SET_KEY_CNF),
-            ]
-            for name, req, payload, cnf in mx_tests:
-                _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
-                frame = build_mx_frame(dst, self._src_mac, req,
-                                       seq=self._next_seq(), payload=payload)
-                for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-                    _LOGGER.debug("  LED MX resp: 0x%04X from %s", mmtype, src)
-                    if mmtype == cnf:
-                        _LOGGER.info("LED works via %s!", name)
-                        self._led_success_macs.add(mac.upper())
-                        return True
-
-            # Qualcomm strategies
-            qca_tests = [
-                ("QCA 0xA00C", build_qca_frame(
-                    dst, self._src_mac, 0xA00C,
-                    struct.pack("<BBH", 0x00, 0x02, 1) + led_val), 0xA00D),
-                ("QCA 0xA00E", build_qca_frame(
-                    dst, self._src_mac, 0xA00E, led_val), 0xA00F),
-            ]
-            for name, frame, expect in qca_tests:
-                _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
-                for mmtype, src, data in self._send_recv(
-                        self._sock_hpav, frame, 1.5):
-                    if mmtype == expect:
-                        _LOGGER.info("LED works via %s!", name)
-                        self._led_success_macs.add(mac.upper())
-                        return True
+            # Qualcomm fallback
+            if self._chipset in ("qualcomm", "unknown"):
+                dst = mac_to_bytes(mac)
+                led_val = b"\x01" if on else b"\x00"
+                qca_tests = [
+                    ("QCA 0xA00C", build_qca_frame(
+                        dst, self._src_mac, 0xA00C,
+                        struct.pack("<BBH", 0x00, 0x02, 1) + led_val), 0xA00D),
+                    ("QCA 0xA00E", build_qca_frame(
+                        dst, self._src_mac, 0xA00E, led_val), 0xA00F),
+                ]
+                for name, frame, expect in qca_tests:
+                    _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
+                    for mmtype, src, data in self._send_recv(
+                            self._sock_hpav, frame, 1.5):
+                        if mmtype == expect:
+                            _LOGGER.info("LED works via %s!", name)
+                            self._led_success_macs.add(mac.upper())
+                            return True
 
             _LOGGER.warning(
                 "LED: no response from %s. "
@@ -846,6 +969,150 @@ class HomeplugAV:
             return False
         except Exception as err:
             _LOGGER.exception("LED control exception for %s: %s", mac, err)
+            return False
+        finally:
+            self._close()
+
+    def set_power_saving(self, mac: str, on: bool) -> bool:
+        """Set power saving mode on a specific adapter (by MAC)."""
+        try:
+            try:
+                self._open_hpav()
+                self._open_mx()
+            except (PermissionError, OSError):
+                return False
+
+            if self._chipset in ("broadcom", "unknown"):
+                return self._set_power_saving_broadcom(mac, on)
+
+            _LOGGER.warning("Power saving not supported for chipset %s", self._chipset)
+            return False
+        except Exception as err:
+            _LOGGER.exception("Power saving exception for %s: %s", mac, err)
+            return False
+        finally:
+            self._close()
+
+    # ── QoS Priority Control ────────────────────────────
+
+    # QoS uses a two-frame sequence via MX_ACTION_REQ (0xA058):
+    #   Frame 1: short (30 bytes) — Byte 1 of payload is the priority indicator
+    #   Frame 2: long (up to 400 bytes) — detailed traffic classification rules
+    #
+    # Byte 1 (payload[1]) values per priority:
+    #   Gaming:     short=0x54, long=0x16  (pattern: 00 e8 03 00 e8 38)
+    #   VoIP:       short=0xa7, long=0x22  (pattern: 00 e8 03 00 e8 78)
+    #   Audio/Video: short=0xcd, long=0xcc (pattern: 00 e8 03 00 e8 58)
+    #   Internet:   short=0x8f, long=0x60  (pattern: 00 e8 03 00 e8 18)
+
+    # Short frames (30 bytes each) — first byte is a command prefix
+    _QOS_SHORT = {
+        "gaming":      bytes.fromhex("005400020100000000000000000000000000000000000000000000000000"),
+        "voip":        bytes.fromhex("00a700020100000000000000000000000000000000000000000000000000"),
+        "audio_video": bytes.fromhex("00cd00020100000000000000000000000000000000000000000000000000"),
+        "internet":    bytes.fromhex("008f00020100000000000000000000000000000000000000000000000000"),
+    }
+
+    # Long frames — traffic classification rules with 0xff padding
+    # Structure: [cmd] [indicator] [header bytes] [rule blocks with e8 03 pattern] [ff padding]
+    _QOS_LONG = {
+        "gaming": bytes.fromhex(
+            "0016000201000000"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+        "voip": bytes.fromhex(
+            "0022000201000000"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+        "audio_video": bytes.fromhex(
+            "00cc000201000000"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+        "internet": bytes.fromhex(
+            "0060000201000000"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+    }
+
+    def _set_qos_broadcom(self, mac: str, priority: str) -> bool:
+        """Set QoS priority via MEDIAXTREAM two-frame sequence (Broadcom)."""
+        if priority not in self._QOS_SHORT:
+            _LOGGER.error("Unknown QoS priority: %s", priority)
+            return False
+
+        dst = mac_to_bytes(mac)
+
+        # Frame 1: short command
+        frame1 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
+                                seq=self._next_seq(),
+                                payload=self._QOS_SHORT[priority])
+        got_resp = False
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                got_resp = True
+        if not got_resp:
+            _LOGGER.debug("QoS short frame got no response from %s", mac)
+
+        # Frame 2: long traffic classification rules
+        frame2 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
+                                seq=self._next_seq(),
+                                payload=self._QOS_LONG[priority])
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                _LOGGER.info("QoS priority set to '%s' for %s", priority, mac)
+                return True
+
+        _LOGGER.warning("QoS: no confirmation from %s for priority '%s'", mac, priority)
+        return False
+
+    def set_qos_priority(self, mac: str, priority: str) -> bool:
+        """Set QoS priority on a specific adapter (by MAC)."""
+        try:
+            try:
+                self._open_hpav()
+                self._open_mx()
+            except (PermissionError, OSError):
+                return False
+
+            if self._chipset in ("broadcom", "unknown"):
+                return self._set_qos_broadcom(mac, priority)
+
+            _LOGGER.warning("QoS not supported for chipset %s", self._chipset)
+            return False
+        except Exception as err:
+            _LOGGER.exception("QoS exception for %s: %s", mac, err)
             return False
         finally:
             self._close()
@@ -995,6 +1262,12 @@ class HomeplugAV:
                         lines.append(
                             f"    > {sta['mac']} "
                             f"TX={sta['tx_rate']} RX={sta['rx_rate']}")
+                elif mmtype == MX_STATUS_IND:
+                    info = parse_mx_status_ind(data)
+                    if info:
+                        lines.append(
+                            f"    > Status: TX={info['tx_rate']} "
+                            f"RX={info['rx_rate']} Mbps")
                 elif mmtype == MX_GET_STATION_CNF:
                     p = data[ETH_HDR+MX_MME_HDR:]
                     lines.append(

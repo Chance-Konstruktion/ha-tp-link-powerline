@@ -43,7 +43,19 @@
       "connectivity": { "name": "Status" }
     },
     "switch": {
-      "led": { "name": "LED" }
+      "led": { "name": "LED" },
+      "power_saving": { "name": "Energiesparmodus" }
+    },
+    "select": {
+      "qos_priority": {
+        "name": "QoS Priorit\u00e4t",
+        "state": {
+          "gaming": "Onlinespiele",
+          "voip": "Voice over IP",
+          "audio_video": "Audio / Video Streaming",
+          "internet": "Internet (Standard)"
+        }
+      }
     },
     "button": {
       "diagnose": { "name": "Diagnose" }
