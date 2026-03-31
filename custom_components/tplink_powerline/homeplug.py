@@ -993,6 +993,130 @@ class HomeplugAV:
         finally:
             self._close()
 
+    # ── QoS Priority Control ────────────────────────────
+
+    # QoS uses a two-frame sequence via MX_ACTION_REQ (0xA058):
+    #   Frame 1: short (30 bytes) — Byte 1 of payload is the priority indicator
+    #   Frame 2: long (up to 400 bytes) — detailed traffic classification rules
+    #
+    # Byte 1 (payload[1]) values per priority:
+    #   Gaming:     short=0x54, long=0x16  (pattern: 00 e8 03 00 e8 38)
+    #   VoIP:       short=0xa7, long=0x22  (pattern: 00 e8 03 00 e8 78)
+    #   Audio/Video: short=0xcd, long=0xcc (pattern: 00 e8 03 00 e8 58)
+    #   Internet:   short=0x8f, long=0x60  (pattern: 00 e8 03 00 e8 18)
+
+    # Short frames (30 bytes each) — first byte is a command prefix
+    _QOS_SHORT = {
+        "gaming":      bytes.fromhex("005400020100000000000000000000000000000000000000000000000000"),
+        "voip":        bytes.fromhex("00a700020100000000000000000000000000000000000000000000000000"),
+        "audio_video": bytes.fromhex("00cd00020100000000000000000000000000000000000000000000000000"),
+        "internet":    bytes.fromhex("008f00020100000000000000000000000000000000000000000000000000"),
+    }
+
+    # Long frames — traffic classification rules with 0xff padding
+    # Structure: [cmd] [indicator] [header bytes] [rule blocks with e8 03 pattern] [ff padding]
+    _QOS_LONG = {
+        "gaming": bytes.fromhex(
+            "0016000201000000"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e838000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+        "voip": bytes.fromhex(
+            "0022000201000000"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e878000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+        "audio_video": bytes.fromhex(
+            "00cc000201000000"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e858000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+        "internet": bytes.fromhex(
+            "0060000201000000"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "00e80300e818000102"
+            "ffffffffffff00ffffffffffff"
+            "0000000000000000000000000000000000000000"
+        ),
+    }
+
+    def _set_qos_broadcom(self, mac: str, priority: str) -> bool:
+        """Set QoS priority via MEDIAXTREAM two-frame sequence (Broadcom)."""
+        if priority not in self._QOS_SHORT:
+            _LOGGER.error("Unknown QoS priority: %s", priority)
+            return False
+
+        dst = mac_to_bytes(mac)
+
+        # Frame 1: short command
+        frame1 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
+                                seq=self._next_seq(),
+                                payload=self._QOS_SHORT[priority])
+        got_resp = False
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                got_resp = True
+        if not got_resp:
+            _LOGGER.debug("QoS short frame got no response from %s", mac)
+
+        # Frame 2: long traffic classification rules
+        frame2 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
+                                seq=self._next_seq(),
+                                payload=self._QOS_LONG[priority])
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+                _LOGGER.info("QoS priority set to '%s' for %s", priority, mac)
+                return True
+
+        _LOGGER.warning("QoS: no confirmation from %s for priority '%s'", mac, priority)
+        return False
+
+    def set_qos_priority(self, mac: str, priority: str) -> bool:
+        """Set QoS priority on a specific adapter (by MAC)."""
+        try:
+            try:
+                self._open_hpav()
+                self._open_mx()
+            except (PermissionError, OSError):
+                return False
+
+            if self._chipset in ("broadcom", "unknown"):
+                return self._set_qos_broadcom(mac, priority)
+
+            _LOGGER.warning("QoS not supported for chipset %s", self._chipset)
+            return False
+        except Exception as err:
+            _LOGGER.exception("QoS exception for %s: %s", mac, err)
+            return False
+        finally:
+            self._close()
+
     # ── Diagnostics ──────────────────────────────────────
 
     def diagnose(self, timeout: float = 10.0) -> str:

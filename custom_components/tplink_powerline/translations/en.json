@@ -46,6 +46,17 @@
       "led": { "name": "LED" },
       "power_saving": { "name": "Power Saving" }
     },
+    "select": {
+      "qos_priority": {
+        "name": "QoS Priority",
+        "state": {
+          "gaming": "Online Gaming",
+          "voip": "Voice over IP",
+          "audio_video": "Audio / Video Streaming",
+          "internet": "Internet (Standard)"
+        }
+      }
+    },
     "button": {
       "diagnose": { "name": "Diagnose" }
     }

@@ -13,7 +13,14 @@ MIN_SCAN_INTERVAL = 10
 MAX_SCAN_INTERVAL = 600
 
 # Platforms
-PLATFORMS = ["sensor", "binary_sensor", "switch", "button"]
+PLATFORMS = ["sensor", "binary_sensor", "switch", "select", "button"]
+
+# QoS priority options
+QOS_PRIORITY_GAMING = "gaming"
+QOS_PRIORITY_VOIP = "voip"
+QOS_PRIORITY_AV = "audio_video"
+QOS_PRIORITY_INTERNET = "internet"
+QOS_OPTIONS = [QOS_PRIORITY_GAMING, QOS_PRIORITY_VOIP, QOS_PRIORITY_AV, QOS_PRIORITY_INTERNET]
 
 # Network-wide device identifier
 NETWORK_DEVICE_ID = "powerline_network"
