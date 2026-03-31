@@ -28,9 +28,10 @@ def device_info_for_adapter(mac: str, dev: dict[str, Any]) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, mac)},
         name=f"Powerline {mac[-8:]}",
-        manufacturer=MANUFACTURER,
+        manufacturer="TP-Link",
         model=dev.get("model") or "Powerline Adapter",
         sw_version=dev.get("firmware_ver") or None,
+        suggested_area="Netzwerk",
     )
 
 
@@ -39,8 +40,9 @@ def network_device_info() -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, NETWORK_DEVICE_ID)},
         name=NETWORK_DEVICE_NAME,
-        manufacturer=MANUFACTURER,
+        manufacturer="TP-Link",
         model="Powerline Network",
+        suggested_area="Netzwerk",
     )
 
 
