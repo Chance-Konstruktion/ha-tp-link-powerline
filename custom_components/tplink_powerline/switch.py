@@ -44,7 +44,6 @@ class LedSwitch(CoordinatorEntity[TpLinkPowerlineCoordinator], SwitchEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:led-on"
     _attr_device_class = SwitchDeviceClass.SWITCH
-    _attr_entity_registry_enabled_default = False
     _attr_translation_key = "led"
 
     def __init__(self, coordinator: TpLinkPowerlineCoordinator,
@@ -79,7 +78,6 @@ class PowerSavingSwitch(CoordinatorEntity[TpLinkPowerlineCoordinator], SwitchEnt
     _attr_has_entity_name = True
     _attr_icon = "mdi:leaf"
     _attr_device_class = SwitchDeviceClass.SWITCH
-    _attr_entity_registry_enabled_default = False
     _attr_translation_key = "power_saving"
 
     def __init__(self, coordinator: TpLinkPowerlineCoordinator,

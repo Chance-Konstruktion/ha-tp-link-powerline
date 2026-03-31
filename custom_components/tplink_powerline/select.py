@@ -40,7 +40,6 @@ class QosPrioritySelect(CoordinatorEntity[TpLinkPowerlineCoordinator], SelectEnt
     _attr_icon = "mdi:quality-high"
     _attr_translation_key = "qos_priority"
     _attr_options = QOS_OPTIONS
-    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: TpLinkPowerlineCoordinator,
                  mac: str, device_info) -> None:
