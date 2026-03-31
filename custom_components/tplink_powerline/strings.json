@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Powerline Network",
-        "description": "Click 'Next' to scan for Powerline adapters on your network.\n\nRequires raw socket access (CAP_NET_RAW).\n\nSupports: TP-Link, FRITZ!Powerline, devolo, and other HomePlug AV adapters."
+        "description": "Click 'Submit' to scan for Powerline adapters on your network.\n\nRequires raw socket access (CAP_NET_RAW).\n\nSupports: TP-Link, FRITZ!Powerline, devolo, and other HomePlug AV adapters."
       },
       "confirm": {
         "title": "Devices Found",
