@@ -59,6 +59,9 @@ MX_LINK_STATS_REQ     = 0xA032  # Link Stats
 MX_LINK_STATS_CNF     = 0xA033
 MX_GET_STATION_REQ    = 0xA080  # Get Station Info
 MX_GET_STATION_CNF    = 0xA081
+MX_ACTION_REQ         = 0xA058  # Broadcom action command (LED, power saving, QoS)
+MX_ACTION_CNF         = 0xA059  # Response to action command
+MX_STATUS_IND         = 0x6046  # Periodic status indication (TX/RX rates, every 2-5s)
 
 # ── Qualcomm Vendor-Specific MMEs (0x88E1) ──
 VS_SW_VER_REQ   = 0xA000;  VS_SW_VER_CNF   = 0xA001
@@ -322,6 +325,28 @@ def parse_mx_nw_stats_cnf(data: bytes) -> list[dict]:
         stations.append({"mac": mac, "plcmac": mac, "tx_rate": tx, "rx_rate": rx})
     return stations
 
+def parse_mx_status_ind(data: bytes) -> dict | None:
+    """Parse MEDIAXTREAM periodic status indication (0x6046).
+
+    The adapter broadcasts this every 2-5 seconds on 0x8912.
+    Payload (after MX header):
+      Bytes 4-5 (LE): TX rate / 2 (multiply by 2 for PHY rate in Mbps)
+      Bytes 6-7 (LE): RX rate / 2 (multiply by 2 for PHY rate in Mbps)
+    """
+    off = ETH_HDR + MX_MME_HDR
+    payload = data[off:] if len(data) > off else b""
+    if len(payload) < 8:
+        return None
+    src = mac_to_str(data[6:12])
+    tx_raw = struct.unpack("<H", payload[4:6])[0]
+    rx_raw = struct.unpack("<H", payload[6:8])[0]
+    return {
+        "mac": src, "plcmac": src,
+        "tx_rate": tx_raw * 2,
+        "rx_rate": rx_raw * 2,
+    }
+
+
 def parse_qca_nw_stats_cnf(data: bytes) -> list[dict]:
     """Parse Qualcomm VS_NW_STATS.CNF (0xA049) from 0x88E1."""
     stations = []
@@ -535,10 +560,59 @@ class HomeplugAV:
                           d.get("firmware_ver", ""), d.get("model", ""))
         return list(devices.values())
 
+    # ── Passive Rate Monitoring ─────────────────────────────
+
+    def get_passive_rates(self, timeout: float = 6.0) -> dict[str, dict[str, int]]:
+        """Listen passively for 0x6046 status indications (Broadcom).
+
+        The adapter broadcasts TX/RX rates every 2-5 seconds.
+        Returns {mac: {"tx_rate": int, "rx_rate": int}}.
+        """
+        try:
+            self._open_mx()
+        except (PermissionError, OSError) as e:
+            _LOGGER.debug("Cannot open MX socket for passive rates: %s", e)
+            return {}
+
+        rates: dict[str, dict[str, int]] = {}
+        try:
+            for mmtype, src, data in self._listen(self._sock_mx, timeout):
+                if mmtype == MX_STATUS_IND:
+                    info = parse_mx_status_ind(data)
+                    if info and (info["tx_rate"] > 0 or info["rx_rate"] > 0):
+                        rates[info["mac"]] = {
+                            "tx_rate": info["tx_rate"],
+                            "rx_rate": info["rx_rate"],
+                        }
+                        _LOGGER.debug("0x6046 passive: %s TX=%d RX=%d",
+                                      info["mac"], info["tx_rate"], info["rx_rate"])
+        finally:
+            self._close()
+        return rates
+
     # ── Rate Fetching ─────────────────────────────────────
 
     def _fetch_rates(self, devices: dict) -> bool:
         found = False
+
+        # ── P: Passive 0x6046 listening (Broadcom, fastest) ──
+        # The adapter sends rates every 2-5s without us asking.
+        _LOGGER.debug("Trying passive 0x6046 listening (6s)...")
+        for mmtype, src, data in self._listen(self._sock_mx, 6.0):
+            if mmtype == MX_STATUS_IND:
+                info = parse_mx_status_ind(data)
+                if info and (info["tx_rate"] > 0 or info["rx_rate"] > 0):
+                    m = info["mac"]
+                    devices.setdefault(m, self._new_dev(m))
+                    devices[m]["tx_rate"] = info["tx_rate"]
+                    devices[m]["rx_rate"] = info["rx_rate"]
+                    found = True
+                    _LOGGER.info("0x6046 passive: %s TX=%d RX=%d",
+                                 m, info["tx_rate"], info["rx_rate"])
+
+        if found:
+            self._chipset = "broadcom"
+            return True
 
         # ── A: MX NW_STATS (0xA034) — primary Broadcom rate method ──
         # This is the dedicated PHY rate request for Broadcom chipsets.
@@ -797,17 +871,19 @@ class HomeplugAV:
 
     # ── LED Control ──────────────────────────────────────
 
-    # MEDIAXTREAM 0xA058 payloads (30 bytes each, confirmed on TL-PA7017 BCM60355)
+    # MEDIAXTREAM MX_ACTION_REQ (0xA058) payloads
+    # Confirmed via Wireshark on TL-PA7017 (BCM60355).
+    # Each payload is 30 bytes (padded with 0x00).
     _LED_ON_PAYLOAD = bytes.fromhex(
-        "95000201000000000000000000000000000000000000000000000000000000")
+        "950002010000000000000000000000000000000000000000000000000000")
     _LED_OFF_PAYLOAD = bytes.fromhex(
-        "4e950002010047000000000000000000000000000000000000000000000000")
+        "4e9500020100470000000000000000000000000000000000000000000000")
 
-    # Energiesparmodus payloads (two-step sequence for enable)
+    # Energiesparmodus: enable requires two-step sequence
     _POWER_SAVE_ON_1 = bytes.fromhex(
         "532900000000000000000000000000000000000000000000000000000000")
     _POWER_SAVE_ON_2 = bytes.fromhex(
-        "05290002010000002c81000000000000000000000000000000000000000000")
+        "052900020100002c81000000000000000000000000000000000000000000")
     _POWER_SAVE_OFF = bytes.fromhex(
         "ec7400010100000000000000000000000000000000000000000000000000")
 
@@ -815,10 +891,10 @@ class HomeplugAV:
         """Set LED via MEDIAXTREAM MME 0xA058 (Broadcom BCM60xxx)."""
         dst = mac_to_bytes(mac)
         payload = self._LED_ON_PAYLOAD if on else self._LED_OFF_PAYLOAD
-        frame = build_mx_frame(dst, self._src_mac, 0xA058,
+        frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                seq=self._next_seq(), payload=payload)
         for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-            if mmtype in (0xA059, 0xA019, 0xA05D):
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
                 _LOGGER.info("LED %s via MX 0xA058 for %s", "ON" if on else "OFF", mac)
                 return True
         return False
@@ -832,7 +908,7 @@ class HomeplugAV:
                                     seq=self._next_seq(), payload=self._POWER_SAVE_ON_1)
             got_resp = False
             for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
-                if mmtype in (0xA059, 0xA019, 0xA05D):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
                     got_resp = True
             if not got_resp:
                 _LOGGER.debug("Power saving step 1 got no response from %s", mac)
@@ -840,14 +916,14 @@ class HomeplugAV:
             frame2 = build_mx_frame(dst, self._src_mac, 0xA058,
                                     seq=self._next_seq(), payload=self._POWER_SAVE_ON_2)
             for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
-                if mmtype in (0xA059, 0xA019, 0xA05D):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
                     _LOGGER.info("Power saving ON for %s", mac)
                     return True
         else:
-            frame = build_mx_frame(dst, self._src_mac, 0xA058,
+            frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                    seq=self._next_seq(), payload=self._POWER_SAVE_OFF)
             for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-                if mmtype in (0xA059, 0xA019, 0xA05D):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
                     _LOGGER.info("Power saving OFF for %s", mac)
                     return True
         return False
@@ -1062,6 +1138,12 @@ class HomeplugAV:
                         lines.append(
                             f"    > {sta['mac']} "
                             f"TX={sta['tx_rate']} RX={sta['rx_rate']}")
+                elif mmtype == MX_STATUS_IND:
+                    info = parse_mx_status_ind(data)
+                    if info:
+                        lines.append(
+                            f"    > Status: TX={info['tx_rate']} "
+                            f"RX={info['rx_rate']} Mbps")
                 elif mmtype == MX_GET_STATION_CNF:
                     p = data[ETH_HDR+MX_MME_HDR:]
                     lines.append(
