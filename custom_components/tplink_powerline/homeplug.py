@@ -797,7 +797,63 @@ class HomeplugAV:
 
     # ── LED Control ──────────────────────────────────────
 
+    # MEDIAXTREAM 0xA058 payloads (30 bytes each, confirmed on TL-PA7017 BCM60355)
+    _LED_ON_PAYLOAD = bytes.fromhex(
+        "95000201000000000000000000000000000000000000000000000000000000")
+    _LED_OFF_PAYLOAD = bytes.fromhex(
+        "4e950002010047000000000000000000000000000000000000000000000000")
+
+    # Energiesparmodus payloads (two-step sequence for enable)
+    _POWER_SAVE_ON_1 = bytes.fromhex(
+        "532900000000000000000000000000000000000000000000000000000000")
+    _POWER_SAVE_ON_2 = bytes.fromhex(
+        "05290002010000002c81000000000000000000000000000000000000000000")
+    _POWER_SAVE_OFF = bytes.fromhex(
+        "ec7400010100000000000000000000000000000000000000000000000000")
+
+    def _set_led_broadcom(self, mac: str, on: bool) -> bool:
+        """Set LED via MEDIAXTREAM MME 0xA058 (Broadcom BCM60xxx)."""
+        dst = mac_to_bytes(mac)
+        payload = self._LED_ON_PAYLOAD if on else self._LED_OFF_PAYLOAD
+        frame = build_mx_frame(dst, self._src_mac, 0xA058,
+                               seq=self._next_seq(), payload=payload)
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
+            if mmtype in (0xA059, 0xA019, 0xA05D):
+                _LOGGER.info("LED %s via MX 0xA058 for %s", "ON" if on else "OFF", mac)
+                return True
+        return False
+
+    def _set_power_saving_broadcom(self, mac: str, on: bool) -> bool:
+        """Set power saving mode via MEDIAXTREAM MME 0xA058 (Broadcom)."""
+        dst = mac_to_bytes(mac)
+        if on:
+            # Two-step sequence for enabling power saving
+            frame1 = build_mx_frame(dst, self._src_mac, 0xA058,
+                                    seq=self._next_seq(), payload=self._POWER_SAVE_ON_1)
+            got_resp = False
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
+                if mmtype in (0xA059, 0xA019, 0xA05D):
+                    got_resp = True
+            if not got_resp:
+                _LOGGER.debug("Power saving step 1 got no response from %s", mac)
+
+            frame2 = build_mx_frame(dst, self._src_mac, 0xA058,
+                                    seq=self._next_seq(), payload=self._POWER_SAVE_ON_2)
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
+                if mmtype in (0xA059, 0xA019, 0xA05D):
+                    _LOGGER.info("Power saving ON for %s", mac)
+                    return True
+        else:
+            frame = build_mx_frame(dst, self._src_mac, 0xA058,
+                                   seq=self._next_seq(), payload=self._POWER_SAVE_OFF)
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
+                if mmtype in (0xA059, 0xA019, 0xA05D):
+                    _LOGGER.info("Power saving OFF for %s", mac)
+                    return True
+        return False
+
     def set_led(self, mac: str, on: bool, timeout: float = 2.0) -> bool:
+        """Set LED on a specific adapter (by MAC)."""
         try:
             try:
                 self._open_hpav()
@@ -805,40 +861,31 @@ class HomeplugAV:
             except (PermissionError, OSError):
                 return False
 
-            dst = mac_to_bytes(mac)
-            led_val = b"\x01" if on else b"\x00"
+            # Try Broadcom MEDIAXTREAM first (most common for modern TP-Link)
+            if self._chipset in ("broadcom", "unknown"):
+                if self._set_led_broadcom(mac, on):
+                    self._led_success_macs.add(mac.upper())
+                    return True
 
-            # MEDIAXTREAM strategies (Broadcom)
-            mx_tests = [
-                ("MX SetKey 0xA018", MX_SET_KEY_REQ, led_val, MX_SET_KEY_CNF),
-            ]
-            for name, req, payload, cnf in mx_tests:
-                _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
-                frame = build_mx_frame(dst, self._src_mac, req,
-                                       seq=self._next_seq(), payload=payload)
-                for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-                    _LOGGER.debug("  LED MX resp: 0x%04X from %s", mmtype, src)
-                    if mmtype == cnf:
-                        _LOGGER.info("LED works via %s!", name)
-                        self._led_success_macs.add(mac.upper())
-                        return True
-
-            # Qualcomm strategies
-            qca_tests = [
-                ("QCA 0xA00C", build_qca_frame(
-                    dst, self._src_mac, 0xA00C,
-                    struct.pack("<BBH", 0x00, 0x02, 1) + led_val), 0xA00D),
-                ("QCA 0xA00E", build_qca_frame(
-                    dst, self._src_mac, 0xA00E, led_val), 0xA00F),
-            ]
-            for name, frame, expect in qca_tests:
-                _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
-                for mmtype, src, data in self._send_recv(
-                        self._sock_hpav, frame, 1.5):
-                    if mmtype == expect:
-                        _LOGGER.info("LED works via %s!", name)
-                        self._led_success_macs.add(mac.upper())
-                        return True
+            # Qualcomm fallback
+            if self._chipset in ("qualcomm", "unknown"):
+                dst = mac_to_bytes(mac)
+                led_val = b"\x01" if on else b"\x00"
+                qca_tests = [
+                    ("QCA 0xA00C", build_qca_frame(
+                        dst, self._src_mac, 0xA00C,
+                        struct.pack("<BBH", 0x00, 0x02, 1) + led_val), 0xA00D),
+                    ("QCA 0xA00E", build_qca_frame(
+                        dst, self._src_mac, 0xA00E, led_val), 0xA00F),
+                ]
+                for name, frame, expect in qca_tests:
+                    _LOGGER.debug("LED: trying %s for %s (on=%s)", name, mac, on)
+                    for mmtype, src, data in self._send_recv(
+                            self._sock_hpav, frame, 1.5):
+                        if mmtype == expect:
+                            _LOGGER.info("LED works via %s!", name)
+                            self._led_success_macs.add(mac.upper())
+                            return True
 
             _LOGGER.warning(
                 "LED: no response from %s. "
@@ -846,6 +893,26 @@ class HomeplugAV:
             return False
         except Exception as err:
             _LOGGER.exception("LED control exception for %s: %s", mac, err)
+            return False
+        finally:
+            self._close()
+
+    def set_power_saving(self, mac: str, on: bool) -> bool:
+        """Set power saving mode on a specific adapter (by MAC)."""
+        try:
+            try:
+                self._open_hpav()
+                self._open_mx()
+            except (PermissionError, OSError):
+                return False
+
+            if self._chipset in ("broadcom", "unknown"):
+                return self._set_power_saving_broadcom(mac, on)
+
+            _LOGGER.warning("Power saving not supported for chipset %s", self._chipset)
+            return False
+        except Exception as err:
+            _LOGGER.exception("Power saving exception for %s: %s", mac, err)
             return False
         finally:
             self._close()

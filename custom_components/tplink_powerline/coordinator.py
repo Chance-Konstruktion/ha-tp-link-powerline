@@ -40,6 +40,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._known_macs: set[str] = set()
         self._new_device_callbacks: list[Callable[[list[dict[str, Any]]], None]] = []
         self.led_states: dict[str, bool] = {}
+        self.power_saving_states: dict[str, bool] = {}
 
         # Index initial devices by MAC
         for dev in initial_devices:
@@ -48,6 +49,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.devices[mac] = dev
                 self._known_macs.add(mac)
                 self.led_states[mac] = True  # assume on
+                self.power_saving_states[mac] = False  # assume off
 
         super().__init__(
             hass, _LOGGER,
@@ -78,6 +80,7 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 else:
                     self.devices[mac] = dev
                     self.led_states.setdefault(mac, True)
+                    self.power_saving_states.setdefault(mac, False)
                     _LOGGER.info("New Powerline adapter discovered: %s (FW: %s)",
                                  mac, dev.get("firmware_ver", "?"))
 
@@ -140,4 +143,21 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         except Exception:
             _LOGGER.exception("LED control crashed for %s (on=%s)", mac, on)
+            return False
+
+    async def async_set_power_saving(self, mac: str, on: bool) -> bool:
+        """Set power saving mode on a specific adapter (by MAC)."""
+        try:
+            result = await asyncio.wait_for(
+                self.hass.async_add_executor_job(self.hp.set_power_saving, mac, on),
+                timeout=LED_SET_TIMEOUT,
+            )
+            if result:
+                self.power_saving_states[mac] = on
+            return result
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Power saving control timed out for %s", mac)
+            return False
+        except Exception:
+            _LOGGER.exception("Power saving control crashed for %s (on=%s)", mac, on)
             return False

@@ -43,7 +43,8 @@
       "connectivity": { "name": "Status" }
     },
     "switch": {
-      "led": { "name": "LED" }
+      "led": { "name": "LED" },
+      "power_saving": { "name": "Power Saving" }
     },
     "button": {
       "diagnose": { "name": "Diagnose" }
