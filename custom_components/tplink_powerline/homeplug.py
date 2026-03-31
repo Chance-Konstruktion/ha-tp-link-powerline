@@ -778,10 +778,18 @@ class HomeplugAV:
                               mmtype, src)
 
         if not found:
-            _LOGGER.warning(
-                "No TX/RX rates obtained (chipset=%s). "
-                "Check Diagnose logs for raw responses.",
-                self._chipset)
+            num_devs = len(devices)
+            if num_devs <= 1:
+                _LOGGER.debug(
+                    "No TX/RX rates (chipset=%s, %d adapter). "
+                    "Rates require at least 2 paired adapters with active PLC link.",
+                    self._chipset, num_devs)
+            else:
+                _LOGGER.info(
+                    "No TX/RX rates obtained (chipset=%s, %d adapters). "
+                    "Adapters may be idle or firmware does not expose rates. "
+                    "Use Diagnose button for raw protocol analysis.",
+                    self._chipset, num_devs)
         return found
 
     def _parse_station_rates(self, data: bytes, queried_mac: str,
@@ -893,10 +901,17 @@ class HomeplugAV:
         payload = self._LED_ON_PAYLOAD if on else self._LED_OFF_PAYLOAD
         frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                seq=self._next_seq(), payload=payload)
-        for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
-                _LOGGER.info("LED %s via MX 0xA058 for %s", "ON" if on else "OFF", mac)
+        responses = self._send_recv(self._sock_mx, frame, 2.5)
+        for mmtype, src, data in responses:
+            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
+                          MX_DISCOVER_CNF, MX_STATUS_IND):
+                _LOGGER.info("LED %s via MX 0xA058 for %s (resp=0x%04X)",
+                             "ON" if on else "OFF", mac, mmtype)
                 return True
+        if responses:
+            _LOGGER.debug("LED: got %d responses but no matching MMType for %s: %s",
+                          len(responses), mac,
+                          [(f"0x{m:04X}", s) for m, s, _ in responses])
         return False
 
     def _set_power_saving_broadcom(self, mac: str, on: bool) -> bool:
@@ -907,23 +922,26 @@ class HomeplugAV:
             frame1 = build_mx_frame(dst, self._src_mac, 0xA058,
                                     seq=self._next_seq(), payload=self._POWER_SAVE_ON_1)
             got_resp = False
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
-                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 2.5):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
+                              MX_DISCOVER_CNF, MX_STATUS_IND):
                     got_resp = True
             if not got_resp:
                 _LOGGER.debug("Power saving step 1 got no response from %s", mac)
 
             frame2 = build_mx_frame(dst, self._src_mac, 0xA058,
                                     seq=self._next_seq(), payload=self._POWER_SAVE_ON_2)
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
-                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 2.5):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
+                              MX_DISCOVER_CNF, MX_STATUS_IND):
                     _LOGGER.info("Power saving ON for %s", mac)
                     return True
         else:
             frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                    seq=self._next_seq(), payload=self._POWER_SAVE_OFF)
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame, 1.5):
-                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+            for mmtype, src, data in self._send_recv(self._sock_mx, frame, 2.5):
+                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
+                              MX_DISCOVER_CNF, MX_STATUS_IND):
                     _LOGGER.info("Power saving OFF for %s", mac)
                     return True
         return False
@@ -939,6 +957,11 @@ class HomeplugAV:
 
             # Try Broadcom MEDIAXTREAM first (most common for modern TP-Link)
             if self._chipset in ("broadcom", "unknown"):
+                if self._set_led_broadcom(mac, on):
+                    self._led_success_macs.add(mac.upper())
+                    return True
+                # Retry once after short delay (adapter may be busy)
+                time.sleep(0.5)
                 if self._set_led_broadcom(mac, on):
                     self._led_success_macs.add(mac.upper())
                     return True
