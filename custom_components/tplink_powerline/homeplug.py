@@ -61,7 +61,19 @@ MX_GET_STATION_REQ    = 0xA080  # Get Station Info
 MX_GET_STATION_CNF    = 0xA081
 MX_ACTION_REQ         = 0xA058  # Broadcom action command (LED, power saving, QoS)
 MX_ACTION_CNF         = 0xA059  # Response to action command
+MX_ACTION_ALT_CNF     = 0xA069  # Alternative action response (seen on TL-PA7017 LED OFF)
 MX_STATUS_IND         = 0x6046  # Periodic status indication (TX/RX rates, every 2-5s)
+
+# Set of MME types that indicate a successful action/command response.
+# Different firmware versions respond with different MMTypes.
+_MX_ACTION_OK = frozenset((
+    MX_ACTION_CNF,      # 0xA059 - standard action confirmation
+    MX_ACTION_ALT_CNF,  # 0xA069 - alternative action confirmation
+    MX_SET_KEY_CNF,     # 0xA019 - sometimes used for action responses
+    MX_GET_PARAM_CNF,   # 0xA05D - sometimes used for action responses
+    MX_DISCOVER_CNF,    # 0xA071 - sometimes echoed during actions
+    MX_STATUS_IND,      # 0x6046 - status indication (adapter acknowledged)
+))
 
 # ── Qualcomm Vendor-Specific MMEs (0x88E1) ──
 VS_SW_VER_REQ   = 0xA000;  VS_SW_VER_CNF   = 0xA001
@@ -520,7 +532,7 @@ class HomeplugAV:
         # Step 1: CC_DISCOVER_LIST on 0x88E1 (works on ALL chipsets)
         frame = build_hpav_frame(BROADCAST_MAC, self._src_mac,
                                  CC_DISCOVER_LIST_REQ)
-        for mmtype, src, data in self._send_recv(self._sock_hpav, frame, timeout):
+        for mmtype, src, data in self._send_recv(self._sock_hpav, frame, min(timeout, 3.0)):
             if mmtype == CC_DISCOVER_LIST_CNF:
                 devices.setdefault(src, self._new_dev(src))
                 for sta in parse_discover_cnf(data):
@@ -532,7 +544,7 @@ class HomeplugAV:
         # Step 2: MEDIAXTREAM Discover on 0x8912 (Broadcom only)
         frame = build_mx_frame(BROADCAST_MAC, self._src_mac, MX_DISCOVER_REQ,
                                seq=self._next_seq())
-        for mmtype, src, data in self._send_recv(self._sock_mx, frame, 3.0):
+        for mmtype, src, data in self._send_recv(self._sock_mx, frame, 2.0):
             if mmtype == MX_DISCOVER_CNF:
                 self._chipset = "broadcom"
                 devices.setdefault(src, self._new_dev(src))
@@ -601,6 +613,12 @@ class HomeplugAV:
 
     def _fetch_rates(self, devices: dict) -> bool:
         found = False
+
+        # Skip rate fetching entirely if only 1 adapter -- no PLC link possible
+        if len(devices) <= 1:
+            _LOGGER.debug("Only %d adapter(s) -- skipping rate fetch (no PLC link)",
+                          len(devices))
+            return False
 
         # ── P: Passive 0x6046 listening (Broadcom, fastest) ──
         # The adapter sends rates every 2-5s without us asking.
@@ -886,95 +904,32 @@ class HomeplugAV:
 
     # ── State Query ───────────────────────────────────────
 
-    # GET_PARAM IDs for device settings (trial IDs for Broadcom BCM60xxx).
-    # Standard IDs from pla-util: 0x0001 (HFID), 0x0025 (User HFID).
-    # Settings IDs are not officially documented; these are common candidates.
-    _STATE_PARAM_IDS = [0x0040, 0x0041, 0x0042, 0x0043, 0x0050, 0x0060]
-
     def query_device_states(self, macs: list[str]) -> dict[str, dict]:
         """Query LED, QoS, and power saving state from each adapter.
 
         Returns {mac: {"led": bool|None, "qos": str|None, "power_saving": bool|None}}.
-        Uses GET_PARAM with trial parameter IDs and analyzes responses.
+
+        Note: No confirmed GET_PARAM IDs for device settings yet.
+        State detection requires Wireshark captures of tpPLC reading state.
+        For now, returns None for all states (defaults will be used).
         """
-        try:
-            self._open_hpav()
-            self._open_mx()
-        except (PermissionError, OSError):
-            return {}
-
         states: dict[str, dict] = {}
-        try:
-            for mac in macs:
-                states[mac] = {"led": None, "qos": None, "power_saving": None}
-                if self._chipset not in ("broadcom", "unknown"):
-                    continue
-
-                dst = mac_to_bytes(mac)
-
-                # Try GET_PARAM with various IDs to find state parameters
-                for param_id in self._STATE_PARAM_IDS:
-                    frame = build_mx_frame(
-                        dst, self._src_mac, MX_GET_PARAM_REQ,
-                        seq=self._next_seq(),
-                        payload=struct.pack("<H", param_id))
-                    for mmtype, src, data in self._send_recv(
-                            self._sock_mx, frame, 1.0):
-                        if mmtype == MX_GET_PARAM_CNF:
-                            val = parse_mx_get_param_cnf(data)
-                            _LOGGER.debug(
-                                "GET_PARAM 0x%04X from %s: %s",
-                                param_id, mac, val.hex() if val else "empty")
-                            # Try to identify LED state from known patterns
-                            self._parse_state_from_param(
-                                states[mac], param_id, val)
-
-                # Also listen briefly for 0x6046 to extract state bits
-                for mmtype, src, data in self._listen(self._sock_mx, 3.0):
-                    if mmtype == MX_STATUS_IND and src.upper() == mac.upper():
-                        self._parse_state_from_status(states[mac], data)
-                        break  # Got one status from this adapter
-
-        except Exception:
-            _LOGGER.debug("State query exception", exc_info=True)
-        finally:
-            self._close()
-
+        for mac in macs:
+            states[mac] = {"led": None, "qos": None, "power_saving": None}
         return states
 
     def _parse_state_from_param(self, state: dict, param_id: int,
                                  val: bytes) -> None:
-        """Try to extract LED/QoS/PS state from a GET_PARAM response."""
-        if not val or len(val) < 1:
-            return
+        """Try to extract LED/QoS/PS state from a GET_PARAM response.
 
-        # Known Broadcom patterns for LED state:
-        # Some adapters return a settings block where byte patterns indicate state.
-        # LED ON typically has 0x95 or 0x01, LED OFF has 0x4e or 0x00.
-        if param_id == 0x0040 and len(val) >= 1:
-            # Candidate: LED state parameter
-            if val[0] in (0x01, 0x95):
-                state["led"] = True
-                _LOGGER.info("LED state queried from %s via 0x%04X: ON", "adapter", param_id)
-            elif val[0] in (0x00, 0x4e):
-                state["led"] = False
-                _LOGGER.info("LED state queried from %s via 0x%04X: OFF", "adapter", param_id)
-
-        # QoS state: look for priority class bytes
-        if param_id == 0x0041 and len(val) >= 1:
-            qos_map = {0x38: "gaming", 0x78: "voip", 0x58: "audio_video", 0x18: "internet"}
-            if val[0] in qos_map:
-                state["qos"] = qos_map[val[0]]
-                _LOGGER.info("QoS state queried via 0x%04X: %s", param_id, state["qos"])
-
-        # Power saving state
-        if param_id == 0x0042 and len(val) >= 1:
-            if val[0] in (0x01, 0x05, 0x53):
-                state["power_saving"] = True
-                _LOGGER.info("Power saving queried via 0x%04X: ON", param_id)
-            elif val[0] in (0x00, 0xec):
-                state["power_saving"] = False
-                _LOGGER.info("Power saving queried via 0x%04X: OFF", param_id)
+        Note: GET_PARAM IDs for device settings are not yet confirmed.
+        0x0040 returns 00210001 on TL-PA7017 regardless of LED state --
+        it's NOT the LED state. All values are logged for future analysis.
+        """
+        # Currently no confirmed state mapping -- just log for analysis.
+        # Once correct param IDs are identified via Wireshark captures
+        # of tpPLC reading state, add mappings here.
+        pass
 
     def _parse_state_from_status(self, state: dict, data: bytes) -> None:
         """Try to extract state bits from 0x6046 status indication payload."""
@@ -1024,8 +979,7 @@ class HomeplugAV:
                                seq=self._next_seq(), payload=payload)
         responses = self._send_recv(self._sock_mx, frame, 2.5)
         for mmtype, src, data in responses:
-            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
-                          MX_DISCOVER_CNF, MX_STATUS_IND):
+            if mmtype in _MX_ACTION_OK:
                 _LOGGER.info("LED %s via MX 0xA058 for %s (resp=0x%04X)",
                              "ON" if on else "OFF", mac, mmtype)
                 return True
@@ -1226,7 +1180,7 @@ class HomeplugAV:
                                 payload=self._QOS_SHORT[priority])
         got_resp = False
         for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
-            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+            if mmtype in _MX_ACTION_OK:
                 got_resp = True
         if not got_resp:
             _LOGGER.debug("QoS short frame got no response from %s", mac)
@@ -1236,7 +1190,7 @@ class HomeplugAV:
                                 seq=self._next_seq(),
                                 payload=self._QOS_LONG[priority])
         for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
-            if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF):
+            if mmtype in _MX_ACTION_OK:
                 _LOGGER.info("QoS priority set to '%s' for %s", priority, mac)
                 return True
 
