@@ -43,15 +43,14 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.power_saving_states: dict[str, bool] = {}
         self.qos_states: dict[str, str] = {}
 
-        # Index initial devices by MAC
+        self._states_queried = False
+
+        # Index initial devices by MAC (states will be queried on first update)
         for dev in initial_devices:
             mac = get_mac(dev)
             if mac:
                 self.devices[mac] = dev
                 self._known_macs.add(mac)
-                self.led_states[mac] = True  # assume on
-                self.power_saving_states[mac] = False  # assume off
-                self.qos_states[mac] = "internet"  # default
 
         super().__init__(
             hass, _LOGGER,
@@ -90,6 +89,46 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if mac not in self._known_macs:
                     self._known_macs.add(mac)
                     new_devices.append(dev)
+
+            # Query device states (LED, QoS, Power Saving) from adapters
+            if not self._states_queried and self.devices:
+                try:
+                    queried = await self.hass.async_add_executor_job(
+                        self.hp.query_device_states, list(self.devices.keys())
+                    )
+                    for mac, state in queried.items():
+                        if state.get("led") is not None:
+                            self.led_states[mac] = state["led"]
+                            _LOGGER.info("Initial LED state for %s: %s",
+                                         mac, "ON" if state["led"] else "OFF")
+                        else:
+                            self.led_states.setdefault(mac, True)
+                        if state.get("qos") is not None:
+                            self.qos_states[mac] = state["qos"]
+                            _LOGGER.info("Initial QoS state for %s: %s",
+                                         mac, state["qos"])
+                        else:
+                            self.qos_states.setdefault(mac, "internet")
+                        if state.get("power_saving") is not None:
+                            self.power_saving_states[mac] = state["power_saving"]
+                            _LOGGER.info("Initial Power Saving state for %s: %s",
+                                         mac, "ON" if state["power_saving"] else "OFF")
+                        else:
+                            self.power_saving_states.setdefault(mac, False)
+                    self._states_queried = True
+                except Exception:
+                    _LOGGER.debug("State query failed, using defaults", exc_info=True)
+                    for mac in self.devices:
+                        self.led_states.setdefault(mac, True)
+                        self.power_saving_states.setdefault(mac, False)
+                        self.qos_states.setdefault(mac, "internet")
+                    self._states_queried = True
+
+            # Ensure all devices have state entries
+            for mac in self.devices:
+                self.led_states.setdefault(mac, True)
+                self.power_saving_states.setdefault(mac, False)
+                self.qos_states.setdefault(mac, "internet")
 
             # Mark devices not seen in this scan
             seen_macs = {get_mac(d) for d in discovered}
