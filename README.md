@@ -26,7 +26,7 @@ Communicates directly via **HomePlug AV** (Layer 2, Ethertype `0x88E1`) and **ME
 
 | Adapter | Chipset | Status |
 |---------|---------|--------|
-| TP-Link TL-PA7017 | Broadcom BCM60355 | Fully tested (LED, QoS, Power Saving, Rates) |
+| TP-Link TL-PA7017 | Broadcom BCM60355 | Tested (Discovery) |
 | TP-Link AV1000 | Broadcom | Tested (Discovery, Rates) |
 | FRITZ!Powerline AV500 | Broadcom | Tested (Discovery) |
 | devolo dLAN | Varies | Discovery works, features depend on chipset |
