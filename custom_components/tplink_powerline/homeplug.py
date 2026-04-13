@@ -614,11 +614,9 @@ class HomeplugAV:
     def _fetch_rates(self, devices: dict) -> bool:
         found = False
 
-        # Skip rate fetching entirely if only 1 adapter -- no PLC link possible
-        if len(devices) <= 1:
-            _LOGGER.debug("Only %d adapter(s) -- skipping rate fetch (no PLC link)",
-                          len(devices))
-            return False
+        # Note: even a single adapter can report its own PHY rate to other
+        # peers on the powerline (e.g. passive 0x6046 status indications,
+        # or NW_STATS if it has ever linked). So we always attempt.
 
         # ── P: Passive 0x6046 listening (Broadcom, fastest) ──
         # The adapter sends rates every 2-5s without us asking.
@@ -958,6 +956,20 @@ class HomeplugAV:
     # MEDIAXTREAM MX_ACTION_REQ (0xA058) payloads
     # Confirmed via Wireshark on TL-PA7017 (BCM60355).
     # Each payload is 30 bytes (padded with 0x00).
+    #
+    # NOTE: MMType 0xA058 is reused by vendors for different purposes.
+    # jbit/powerline (Rust) and pla-util implement a "SetProperty" layout
+    #   [seq][prop_id][0x00][count=1][size_lo][size_hi][data...]
+    # that is used ONLY for HFID (human-friendly ID) properties
+    # (prop IDs 0x1b/0x1c/0x25/0x26). Neither project implements LED,
+    # QoS or Power-Saving over MEDIAXTREAM -- no Property IDs exist.
+    #
+    # The payloads below are the TP-Link/Gigle proprietary "Action"
+    # opcodes captured from the vendor tpPLC Utility with Wireshark.
+    # They are confirmed working on TL-PA7017 firmware:
+    #   LED ON  -> response 0xA059 (MX_ACTION_CNF)
+    #   LED OFF -> response 0xA069 (MX_ACTION_ALT_CNF, firmware dep.)
+    # Do NOT replace with the SetProperty structure; it will be rejected.
     _LED_ON_PAYLOAD = bytes.fromhex(
         "950002010000000000000000000000000000000000000000000000000000")
     _LED_OFF_PAYLOAD = bytes.fromhex(
