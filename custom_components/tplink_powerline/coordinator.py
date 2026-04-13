@@ -86,6 +86,10 @@ class TpLinkPowerlineCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.info("New Powerline adapter discovered: %s (FW: %s)",
                                  mac, dev.get("firmware_ver", "?"))
 
+                # Prefer passively observed status bits from 0x6046 if available.
+                if "led_on" in dev:
+                    self.led_states[mac] = bool(dev["led_on"])
+
                 if mac not in self._known_macs:
                     self._known_macs.add(mac)
                     new_devices.append(dev)
