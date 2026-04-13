@@ -261,32 +261,67 @@ def parse_mx_nw_info_cnf(data: bytes) -> dict:
     if p >= len(payload):
         return result
 
-    num_sta = payload[p]; p += 1
-    _LOGGER.debug("  Stations: %d", num_sta)
-    for i in range(num_sta):
-        if p + 13 > len(payload):
-            break
-        sta_mac = mac_to_str(payload[p:p+6])
-        sta_tei = payload[p+6]
-        bridge_mac = mac_to_str(payload[p+7:p+13])
-        tx = 0; rx = 0
-        # Try 2-byte LE rates after bridge MAC
-        if p + 17 <= len(payload):
-            tx = struct.unpack("<H", payload[p+13:p+15])[0]
-            rx = struct.unpack("<H", payload[p+15:p+17])[0]
-            p += 17
-        elif p + 15 <= len(payload):
-            # 1-byte rates (multiply by 2 for PHY rate)
-            tx = payload[p+13] * 2
-            rx = payload[p+14] * 2
-            p += 15
+    # Normally a station count byte follows network blocks.
+    # Some Broadcom firmware responses omit it and append station-like
+    # entries directly, so we support both layouts.
+    remaining = len(payload) - p
+    parse_implicit = False
+    if remaining > 0:
+        num_sta = payload[p]
+        expected_min = p + 1 + (num_sta * 13)
+        if num_sta == 0 and remaining >= 6 and payload[p:p+6] != b"\x00" * 6:
+            parse_implicit = True
+        elif num_sta > 0 and expected_min <= len(payload):
+            p += 1
+            _LOGGER.debug("  Stations: %d", num_sta)
+            for i in range(num_sta):
+                if p + 13 > len(payload):
+                    break
+                sta_mac = mac_to_str(payload[p:p+6])
+                sta_tei = payload[p+6]
+                bridge_mac = mac_to_str(payload[p+7:p+13])
+                tx = 0
+                rx = 0
+                # Try 2-byte LE rates after bridge MAC
+                if p + 17 <= len(payload):
+                    tx = struct.unpack("<H", payload[p+13:p+15])[0]
+                    rx = struct.unpack("<H", payload[p+15:p+17])[0]
+                    p += 17
+                elif p + 15 <= len(payload):
+                    # 1-byte rates (multiply by 2 for PHY rate)
+                    tx = payload[p+13] * 2
+                    rx = payload[p+14] * 2
+                    p += 15
+                else:
+                    p += 13
+                _LOGGER.debug("  Sta[%d]: %s bridge=%s TX=%d RX=%d", i, sta_mac, bridge_mac, tx, rx)
+                result["stations"].append({
+                    "mac": sta_mac,
+                    "plcmac": sta_mac,
+                    "tei": sta_tei,
+                    "tx_rate": tx,
+                    "rx_rate": rx,
+                })
+            return result
         else:
-            p += 13
-        _LOGGER.debug("  Sta[%d]: %s TX=%d RX=%d", i, sta_mac, tx, rx)
-        result["stations"].append({
-            "mac": sta_mac, "plcmac": sta_mac,
-            "tei": sta_tei, "tx_rate": tx, "rx_rate": rx
-        })
+            parse_implicit = True
+
+    if parse_implicit:
+        _LOGGER.debug("  Stations: implicit layout")
+        i = 0
+        while p + 6 <= len(payload):
+            raw_mac = payload[p:p+6]
+            if raw_mac == b"\x00" * 6:
+                break
+            sta_mac = mac_to_str(raw_mac)
+            result["stations"].append({"mac": sta_mac, "plcmac": sta_mac, "tx_rate": 0, "rx_rate": 0})
+            _LOGGER.debug("  Sta[%d]: %s (implicit)", i, sta_mac)
+            i += 1
+            # Undocumented Broadcom payloads often use 13-byte station blocks.
+            # If fewer bytes remain, just advance by MAC length to avoid loops.
+            step = 13 if p + 13 <= len(payload) else 6
+            p += step
+
     return result
 
 def parse_mx_get_param_cnf(data: bytes) -> bytes:
@@ -363,6 +398,10 @@ def parse_mx_status_ind(data: bytes) -> dict | None:
     if len(payload) > 8:
         _LOGGER.debug("0x6046 full payload from %s (%d bytes): %s",
                       src, len(payload), payload.hex())
+    # Heuristic: bit 2 in payload[2] appears to track LED state on BCM60355.
+    # Keep this optional until more captures validate it across models.
+    if len(payload) > 2:
+        result["led_on"] = bool(payload[2] & 0x04)
     return result
 
 
@@ -624,9 +663,13 @@ class HomeplugAV:
         for mmtype, src, data in self._listen(self._sock_mx, 6.0):
             if mmtype == MX_STATUS_IND:
                 info = parse_mx_status_ind(data)
-                if info and (info["tx_rate"] > 0 or info["rx_rate"] > 0):
-                    m = info["mac"]
-                    devices.setdefault(m, self._new_dev(m))
+                if not info:
+                    continue
+                m = info["mac"]
+                devices.setdefault(m, self._new_dev(m))
+                if "led_on" in info:
+                    devices[m]["led_on"] = info["led_on"]
+                if info["tx_rate"] > 0 or info["rx_rate"] > 0:
                     devices[m]["tx_rate"] = info["tx_rate"]
                     devices[m]["rx_rate"] = info["rx_rate"]
                     found = True
