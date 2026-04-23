@@ -64,15 +64,14 @@ MX_ACTION_CNF         = 0xA059  # Response to action command
 MX_ACTION_ALT_CNF     = 0xA069  # Alternative action response (seen on TL-PA7017 LED OFF)
 MX_STATUS_IND         = 0x6046  # Periodic status indication (TX/RX rates, every 2-5s)
 
-# Set of MME types that indicate a successful action/command response.
-# Different firmware versions respond with different MMTypes.
+# Valid confirmations for MX_ACTION_REQ (0xA058).
+# 0x6046 is a passive status broadcast every 2-5s regardless of any request,
+# so accepting it as an ACK produces false positives. 0xA019 / 0xA05D / 0xA071
+# are responses to other requests; seeing those instead of an action CNF means
+# the adapter silently ignored our action frame.
 _MX_ACTION_OK = frozenset((
     MX_ACTION_CNF,      # 0xA059 - standard action confirmation
-    MX_ACTION_ALT_CNF,  # 0xA069 - alternative action confirmation
-    MX_SET_KEY_CNF,     # 0xA019 - sometimes used for action responses
-    MX_GET_PARAM_CNF,   # 0xA05D - sometimes used for action responses
-    MX_DISCOVER_CNF,    # 0xA071 - sometimes echoed during actions
-    MX_STATUS_IND,      # 0x6046 - status indication (adapter acknowledged)
+    MX_ACTION_ALT_CNF,  # 0xA069 - alternative action confirmation (BCM firmware)
 ))
 
 # ── Qualcomm Vendor-Specific MMEs (0x88E1) ──
@@ -398,10 +397,6 @@ def parse_mx_status_ind(data: bytes) -> dict | None:
     if len(payload) > 8:
         _LOGGER.debug("0x6046 full payload from %s (%d bytes): %s",
                       src, len(payload), payload.hex())
-    # Heuristic: bit 2 in payload[2] appears to track LED state on BCM60355.
-    # Keep this optional until more captures validate it across models.
-    if len(payload) > 2:
-        result["led_on"] = bool(payload[2] & 0x04)
     return result
 
 
@@ -494,11 +489,20 @@ class HomeplugAV:
                 setattr(self, attr, None)
 
     def _send_recv(self, sock: socket.socket, frame: bytes,
-                   timeout: float = 3.0) -> list[tuple[int, str, bytes]]:
-        """Send frame, collect all responses until timeout."""
+                   timeout: float = 3.0,
+                   expected_src: str | None = None,
+                   ) -> list[tuple[int, str, bytes]]:
+        """Send frame, collect responses until timeout.
+
+        If expected_src is given (unicast command), drop frames that do not
+        originate from that MAC. This prevents unrelated background traffic
+        (e.g. 0x6046 status broadcasts from other adapters) from being
+        misinterpreted as a response to our request.
+        """
         sock.settimeout(timeout)
         sock.send(frame)
         results = []
+        expect = expected_src.upper() if expected_src else None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
@@ -508,6 +512,8 @@ class HomeplugAV:
                     continue
                 mmtype = struct.unpack("<H", data[ETH_HDR+1:ETH_HDR+3])[0]
                 src = mac_to_str(data[6:12])
+                if expect is not None and src.upper() != expect:
+                    continue
                 results.append((mmtype, src, data))
             except socket.timeout:
                 break
@@ -667,8 +673,6 @@ class HomeplugAV:
                     continue
                 m = info["mac"]
                 devices.setdefault(m, self._new_dev(m))
-                if "led_on" in info:
-                    devices[m]["led_on"] = info["led_on"]
                 if info["tx_rate"] > 0 or info["rx_rate"] > 0:
                     devices[m]["tx_rate"] = info["tx_rate"]
                     devices[m]["rx_rate"] = info["rx_rate"]
@@ -1032,16 +1036,21 @@ class HomeplugAV:
         payload = self._LED_ON_PAYLOAD if on else self._LED_OFF_PAYLOAD
         frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                seq=self._next_seq(), payload=payload)
-        responses = self._send_recv(self._sock_mx, frame, 2.5)
+        responses = self._send_recv(self._sock_mx, frame, 2.5,
+                                    expected_src=mac)
         for mmtype, src, data in responses:
             if mmtype in _MX_ACTION_OK:
                 _LOGGER.info("LED %s via MX 0xA058 for %s (resp=0x%04X)",
                              "ON" if on else "OFF", mac, mmtype)
                 return True
         if responses:
-            _LOGGER.debug("LED: got %d responses but no matching MMType for %s: %s",
-                          len(responses), mac,
-                          [(f"0x{m:04X}", s) for m, s, _ in responses])
+            _LOGGER.debug(
+                "LED %s: %s replied but no MX_ACTION_CNF/ALT_CNF "
+                "(got %s) -- command likely ignored",
+                "ON" if on else "OFF", mac,
+                [f"0x{m:04X}" for m, _, _ in responses])
+        else:
+            _LOGGER.debug("LED %s: no reply from %s", "ON" if on else "OFF", mac)
         return False
 
     def _set_power_saving_broadcom(self, mac: str, on: bool) -> bool:
@@ -1049,31 +1058,33 @@ class HomeplugAV:
         dst = mac_to_bytes(mac)
         if on:
             # Two-step sequence for enabling power saving
-            frame1 = build_mx_frame(dst, self._src_mac, 0xA058,
+            frame1 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                     seq=self._next_seq(), payload=self._POWER_SAVE_ON_1)
-            got_resp = False
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 2.5):
-                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
-                              MX_DISCOVER_CNF, MX_STATUS_IND):
-                    got_resp = True
+            got_resp = any(
+                mmtype in _MX_ACTION_OK
+                for mmtype, _, _ in self._send_recv(
+                    self._sock_mx, frame1, 2.5, expected_src=mac)
+            )
             if not got_resp:
-                _LOGGER.debug("Power saving step 1 got no response from %s", mac)
+                _LOGGER.debug("Power saving step 1 got no action CNF from %s", mac)
 
-            frame2 = build_mx_frame(dst, self._src_mac, 0xA058,
+            frame2 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                     seq=self._next_seq(), payload=self._POWER_SAVE_ON_2)
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 2.5):
-                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
-                              MX_DISCOVER_CNF, MX_STATUS_IND):
+            for mmtype, src, data in self._send_recv(
+                    self._sock_mx, frame2, 2.5, expected_src=mac):
+                if mmtype in _MX_ACTION_OK:
                     _LOGGER.info("Power saving ON for %s", mac)
                     return True
         else:
             frame = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                    seq=self._next_seq(), payload=self._POWER_SAVE_OFF)
-            for mmtype, src, data in self._send_recv(self._sock_mx, frame, 2.5):
-                if mmtype in (MX_ACTION_CNF, MX_SET_KEY_CNF, MX_GET_PARAM_CNF,
-                              MX_DISCOVER_CNF, MX_STATUS_IND):
+            for mmtype, src, data in self._send_recv(
+                    self._sock_mx, frame, 2.5, expected_src=mac):
+                if mmtype in _MX_ACTION_OK:
                     _LOGGER.info("Power saving OFF for %s", mac)
                     return True
+        _LOGGER.debug("Power saving %s: no action CNF from %s",
+                      "ON" if on else "OFF", mac)
         return False
 
     def set_led(self, mac: str, on: bool, timeout: float = 2.0) -> bool:
@@ -1233,18 +1244,20 @@ class HomeplugAV:
         frame1 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                 seq=self._next_seq(),
                                 payload=self._QOS_SHORT[priority])
-        got_resp = False
-        for mmtype, src, data in self._send_recv(self._sock_mx, frame1, 1.5):
-            if mmtype in _MX_ACTION_OK:
-                got_resp = True
+        got_resp = any(
+            mmtype in _MX_ACTION_OK
+            for mmtype, _, _ in self._send_recv(
+                self._sock_mx, frame1, 1.5, expected_src=mac)
+        )
         if not got_resp:
-            _LOGGER.debug("QoS short frame got no response from %s", mac)
+            _LOGGER.debug("QoS short frame got no action CNF from %s", mac)
 
         # Frame 2: long traffic classification rules
         frame2 = build_mx_frame(dst, self._src_mac, MX_ACTION_REQ,
                                 seq=self._next_seq(),
                                 payload=self._QOS_LONG[priority])
-        for mmtype, src, data in self._send_recv(self._sock_mx, frame2, 1.5):
+        for mmtype, src, data in self._send_recv(
+                self._sock_mx, frame2, 1.5, expected_src=mac):
             if mmtype in _MX_ACTION_OK:
                 _LOGGER.info("QoS priority set to '%s' for %s", priority, mac)
                 return True

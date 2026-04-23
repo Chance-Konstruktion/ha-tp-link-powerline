@@ -48,8 +48,7 @@ class TestMediaXtreamParsing(TestCase):
         self.assertEqual("B0:19:21:F5:DB:A7", parsed["stations"][0]["mac"])
         self.assertEqual("AA:BB:CC:DD:EE:FF", parsed["stations"][1]["mac"])
 
-    def test_parse_mx_status_ind_extracts_led_state_heuristic(self) -> None:
-        # payload[2] has bit 2 set => LED ON heuristic.
+    def test_parse_mx_status_ind_extracts_rates(self) -> None:
         payload = b"\x02\x46\x04\x00" + b"\x05\x00\x06\x00"
         src_mac = bytes.fromhex("b01921f5dba7")
         frame = (b"\x00" * 6) + src_mac + (b"\x00" * (ETH_HDR - 12 + MX_MME_HDR)) + payload
@@ -60,4 +59,4 @@ class TestMediaXtreamParsing(TestCase):
         self.assertEqual("B0:19:21:F5:DB:A7", parsed["mac"])
         self.assertEqual(10, parsed["tx_rate"])
         self.assertEqual(12, parsed["rx_rate"])
-        self.assertTrue(parsed["led_on"])
+        self.assertNotIn("led_on", parsed)
