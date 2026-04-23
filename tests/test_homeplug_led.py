@@ -17,6 +17,7 @@ assert _SPEC and _SPEC.loader
 _SPEC.loader.exec_module(_MODULE)
 
 HomeplugAV = _MODULE.HomeplugAV
+MX_ACTION_CNF = _MODULE.MX_ACTION_CNF
 MX_SET_KEY_CNF = _MODULE.MX_SET_KEY_CNF
 
 
@@ -57,10 +58,29 @@ class TestHomeplugSetLed(TestCase):
              patch.object(
                  hp,
                  "_send_recv",
-                 return_value=[(MX_SET_KEY_CNF, "AA:BB:CC:DD:EE:FF", b"dummy")],
+                 return_value=[(MX_ACTION_CNF, "AA:BB:CC:DD:EE:FF", b"dummy")],
              ), \
              patch.object(hp, "_close") as close_mock:
             result = hp.set_led("AA:BB:CC:DD:EE:FF", True)
 
         self.assertTrue(result)
         close_mock.assert_called_once()
+
+    def test_set_led_returns_false_when_only_status_broadcast_seen(self) -> None:
+        """A 0x6046 status broadcast is NOT a valid action confirmation."""
+        hp = HomeplugAV("eth0")
+        hp._sock_mx = MagicMock()
+        hp._sock_hpav = MagicMock()
+
+        MX_STATUS_IND = _MODULE.MX_STATUS_IND
+        with patch.object(hp, "_open_hpav"), \
+             patch.object(hp, "_open_mx"), \
+             patch.object(
+                 hp,
+                 "_send_recv",
+                 return_value=[(MX_STATUS_IND, "AA:BB:CC:DD:EE:FF", b"dummy")],
+             ), \
+             patch.object(hp, "_close"):
+            result = hp.set_led("AA:BB:CC:DD:EE:FF", True)
+
+        self.assertFalse(result)
