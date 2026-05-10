@@ -1,0 +1,134 @@
+"""Unit tests for TpLinkPowerlineCoordinator._async_update_data."""
+
+import types
+from unittest import IsolatedAsyncioTestCase
+from unittest.mock import MagicMock
+
+# conftest.py installs all HA stubs before this module is collected.
+from custom_components.tplink_powerline.coordinator import TpLinkPowerlineCoordinator
+from custom_components.tplink_powerline.const import get_mac
+
+# Use uppercase MACs so get_mac() normalisation is a no-op.
+MAC_A = "AA:BB:CC:DD:EE:01"
+MAC_B = "AA:BB:CC:DD:EE:02"
+
+
+def _make_device(mac, tx=100, rx=50):
+    return {"mac": mac, "tx_rate": tx, "rx_rate": rx}
+
+
+class _FakeHass:
+    """Minimal hass stub that runs executor jobs synchronously."""
+
+    async def async_add_executor_job(self, func, *args):
+        # Simply call the (possibly mocked) function; MagicMock.return_value is returned.
+        return func(*args)
+
+
+def _build_coordinator(discover_result, state_result=None):
+    """Instantiate a coordinator without opening real sockets."""
+    coord = TpLinkPowerlineCoordinator.__new__(TpLinkPowerlineCoordinator)
+    coord.hass = _FakeHass()
+    coord.hp = MagicMock()
+    coord.hp.discover.return_value = discover_result
+    coord.hp.query_device_states.return_value = state_result or {}
+    coord.devices = {}
+    coord._known_macs = set()
+    coord._new_device_callbacks = []
+    coord.led_states = {}
+    coord.power_saving_states = {}
+    coord.qos_states = {}
+    coord._states_queried = False
+    coord.logger = MagicMock()
+    return coord
+
+
+def _preload(coord, devices):
+    """Pre-populate coordinator as if those devices were seen before."""
+    for dev in devices:
+        mac = get_mac(dev)
+        if mac:
+            coord.devices[mac] = dict(dev)
+            coord._known_macs.add(mac)
+
+
+class TestAsyncUpdateData(IsolatedAsyncioTestCase):
+    async def test_returns_correct_totals_for_two_devices(self):
+        devices = [_make_device(MAC_A, tx=200, rx=100), _make_device(MAC_B, tx=300, rx=150)]
+        coord = _build_coordinator(discover_result=devices)
+
+        data = await coord._async_update_data()
+
+        self.assertTrue(data["online"])
+        self.assertEqual(data["plc_device_count"], 2)
+        self.assertEqual(data["total_tx_rate"], 500)
+        self.assertEqual(data["total_rx_rate"], 250)
+
+    async def test_new_device_triggers_callback(self):
+        device = _make_device(MAC_A)
+        coord = _build_coordinator(discover_result=[device])
+
+        callback_received = []
+        coord.register_new_device_callback(callback_received.extend)
+
+        await coord._async_update_data()
+
+        self.assertEqual(len(callback_received), 1)
+        self.assertEqual(get_mac(callback_received[0]), MAC_A)
+
+    async def test_known_device_does_not_trigger_callback(self):
+        device = _make_device(MAC_A)
+        coord = _build_coordinator(discover_result=[device])
+        _preload(coord, [device])
+
+        callback_received = []
+        coord.register_new_device_callback(callback_received.extend)
+
+        await coord._async_update_data()
+
+        self.assertEqual(len(callback_received), 0)
+
+    async def test_offline_device_counted_in_total_not_online(self):
+        device_a = _make_device(MAC_A)
+        device_b = _make_device(MAC_B)
+        # Only A is returned by discover; B was seen before but is now offline.
+        coord = _build_coordinator(discover_result=[device_a])
+        _preload(coord, [device_a, device_b])
+
+        data = await coord._async_update_data()
+
+        self.assertEqual(data["plc_device_count"], 1)        # online only
+        self.assertEqual(data["plc_device_count_total"], 2)  # includes offline
+
+    async def test_default_states_set_for_new_device(self):
+        device = _make_device(MAC_A)
+        coord = _build_coordinator(discover_result=[device], state_result={})
+
+        await coord._async_update_data()
+
+        self.assertTrue(coord.led_states.get(MAC_A))
+        self.assertFalse(coord.power_saving_states.get(MAC_A))
+        self.assertEqual(coord.qos_states.get(MAC_A), "internet")
+
+    async def test_state_query_applied_on_first_update(self):
+        device = _make_device(MAC_A)
+        queried = {MAC_A: {"led": False, "qos": "gaming", "power_saving": True}}
+        coord = _build_coordinator(discover_result=[device], state_result=queried)
+
+        await coord._async_update_data()
+
+        self.assertFalse(coord.led_states.get(MAC_A))
+        self.assertEqual(coord.qos_states.get(MAC_A), "gaming")
+        self.assertTrue(coord.power_saving_states.get(MAC_A))
+        self.assertTrue(coord._states_queried)
+
+    async def test_state_query_runs_only_once(self):
+        device = _make_device(MAC_A)
+        coord = _build_coordinator(discover_result=[device], state_result={})
+
+        await coord._async_update_data()
+        coord.hp.query_device_states.reset_mock()
+        await coord._async_update_data()
+
+        # Second update must not call query_device_states again.
+        coord.hp.query_device_states.assert_not_called()
