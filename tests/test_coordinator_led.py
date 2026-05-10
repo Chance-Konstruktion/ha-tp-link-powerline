@@ -1,50 +1,10 @@
 """Unit tests for coordinator LED executor handling."""
 
-import sys
 import types
-from typing import Generic, TypeVar
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import MagicMock
 
-
-# Minimal stubs so the coordinator module can be imported without Home Assistant.
-if "homeassistant" not in sys.modules:
-    homeassistant = types.ModuleType("homeassistant")
-    sys.modules["homeassistant"] = homeassistant
-
-if "homeassistant.config_entries" not in sys.modules:
-    config_entries = types.ModuleType("homeassistant.config_entries")
-    config_entries.ConfigEntry = object
-    sys.modules["homeassistant.config_entries"] = config_entries
-
-if "homeassistant.core" not in sys.modules:
-    core = types.ModuleType("homeassistant.core")
-
-    class HomeAssistant:  # pragma: no cover - runtime stub
-        pass
-
-    def callback(func):
-        return func
-
-    core.HomeAssistant = HomeAssistant
-    core.callback = callback
-    sys.modules["homeassistant.core"] = core
-
-if "homeassistant.helpers.update_coordinator" not in sys.modules:
-    helpers_uc = types.ModuleType("homeassistant.helpers.update_coordinator")
-    _T = TypeVar("_T")
-
-    class DataUpdateCoordinator(Generic[_T]):  # pragma: no cover - runtime stub
-        def __init__(self, hass, logger, name=None, update_interval=None):
-            self.hass = hass
-
-    class UpdateFailed(Exception):
-        pass
-
-    helpers_uc.DataUpdateCoordinator = DataUpdateCoordinator
-    helpers_uc.UpdateFailed = UpdateFailed
-    sys.modules["homeassistant.helpers.update_coordinator"] = helpers_uc
-
+# conftest.py installs all HA stubs before this module is collected.
 from custom_components.tplink_powerline.coordinator import TpLinkPowerlineCoordinator
 
 
@@ -64,18 +24,47 @@ class TestCoordinatorLed(IsolatedAsyncioTestCase):
         fake = types.SimpleNamespace(
             hass=_FakeHass(result=True),
             hp=types.SimpleNamespace(set_led=MagicMock(return_value=True)),
+            led_states={},
         )
 
         result = await TpLinkPowerlineCoordinator.async_set_led(fake, "AA:BB:CC:DD:EE:FF", True)
 
         self.assertTrue(result)
+        self.assertTrue(fake.led_states.get("AA:BB:CC:DD:EE:FF"))
 
     async def test_async_set_led_returns_false_on_exception(self):
         fake = types.SimpleNamespace(
             hass=_FakeHass(exc=RuntimeError("executor failed")),
             hp=types.SimpleNamespace(set_led=MagicMock(return_value=True)),
+            led_states={},
         )
 
         result = await TpLinkPowerlineCoordinator.async_set_led(fake, "AA:BB:CC:DD:EE:FF", False)
 
         self.assertFalse(result)
+
+    async def test_async_set_led_returns_false_on_timeout(self):
+        import asyncio
+
+        class _TimeoutHass:
+            async def async_add_executor_job(self, func, *args):
+                await asyncio.sleep(100)
+
+        fake = types.SimpleNamespace(
+            hass=_TimeoutHass(),
+            hp=types.SimpleNamespace(set_led=MagicMock()),
+            led_states={},
+        )
+
+        # Patch LED_SET_TIMEOUT to something tiny so the test is fast
+        import custom_components.tplink_powerline.coordinator as coord_mod
+        original = coord_mod.LED_SET_TIMEOUT
+        coord_mod.LED_SET_TIMEOUT = 0.01
+        try:
+            result = await TpLinkPowerlineCoordinator.async_set_led(fake, "AA:BB:CC:DD:EE:FF", True)
+        finally:
+            coord_mod.LED_SET_TIMEOUT = original
+
+        self.assertFalse(result)
+        # State must NOT be updated on timeout
+        self.assertNotIn("AA:BB:CC:DD:EE:FF", fake.led_states)
