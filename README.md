@@ -10,15 +10,17 @@ Communicates directly via **HomePlug AV** (Layer 2, Ethertype `0x88E1`) and **ME
 
 ## Features
 
+> **Current status:** Only the **Online/Offline status** (Connected / Disconnected) is confirmed to work reliably. All other features listed below are implemented but **not yet verified** to work correctly on real hardware. Use them with caution and report your findings.
+
 - **Auto-Discovery** -- finds all Powerline adapters automatically via Layer 2
-- **TX/RX Data Rates** per adapter (Mbit/s PHY Rate) via passive monitoring (0x6046)
-- **Online Status** per adapter (BinarySensor with `device_class: connectivity`)
-- **Adapter Count** (online + total)
-- **Firmware Version** and model detection per adapter
-- **LED Control** per adapter (on/off via MEDIAXTREAM 0xA058)
-- **Power Saving Mode** per adapter (on/off, Broadcom only)
-- **QoS Priority** per adapter (Gaming, VoIP, Audio/Video, Internet)
-- **Diagnostic Button** -- full protocol scan with raw frame dump to logs
+- **Online Status** per adapter (BinarySensor with `device_class: connectivity`) ✅ **Working**
+- **TX/RX Data Rates** per adapter (Mbit/s PHY Rate) via passive monitoring (0x6046) ⚠️ *Unverified*
+- **Adapter Count** (online + total) ⚠️ *Unverified*
+- **Firmware Version** and model detection per adapter ⚠️ *Unverified*
+- **LED Control** per adapter (on/off via MEDIAXTREAM 0xA058) ⚠️ *Unverified*
+- **Power Saving Mode** per adapter (on/off, Broadcom only) ⚠️ *Unverified*
+- **QoS Priority** per adapter (Gaming, VoIP, Audio/Video, Internet) ⚠️ *Unverified*
+- **Diagnostic Button** -- full protocol scan with raw frame dump to logs ⚠️ *Unverified*
 - **Dynamic Discovery** -- new adapters appear automatically within one poll cycle
 - **Dual Protocol** -- auto-detects Broadcom (MEDIAXTREAM) vs. Qualcomm chipsets
 
