@@ -83,7 +83,7 @@ class TpLinkPowerlineConfigFlow(ConfigFlow, domain=DOMAIN):
         """Step 2: Show discovered devices, user confirms."""
         if user_input is not None:
             count = len(self._discovered)
-            title = f"Powerline ({count} Adapter)"
+            title = "Powerline"
 
             return self.async_create_entry(
                 title=title,
